@@ -1,4 +1,5 @@
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -59,6 +60,10 @@ class RequestStats:
 
 
 class LLM:
+    # Shared rate limiter across all LLM instances (100 req/min default)
+    _rate_lock: asyncio.Lock | None = None
+    _last_request_time: float = 0.0
+
     def __init__(self, config: LLMConfig, agent_name: str | None = None):
         self.config = config
         self.agent_name = agent_name
@@ -127,11 +132,24 @@ class LLM:
                 wait = min(10, 2 * (2**attempt))
                 await asyncio.sleep(wait)
 
+    async def _enforce_rate_limit(self) -> None:
+        if LLM._rate_lock is None:
+            LLM._rate_lock = asyncio.Lock()
+        rpm = int(Config.get("llm_rate_limit_rpm") or "100")
+        delay = 60.0 / rpm
+        async with LLM._rate_lock:
+            now = time.monotonic()
+            elapsed = now - LLM._last_request_time
+            if elapsed < delay:
+                await asyncio.sleep(delay - elapsed)
+            LLM._last_request_time = time.monotonic()
+
     async def _stream(self, messages: list[dict[str, Any]]) -> AsyncIterator[LLMResponse]:
         accumulated = ""
         chunks: list[Any] = []
         done_streaming = 0
 
+        await self._enforce_rate_limit()
         self._total_stats.requests += 1
         response = await acompletion(**self._build_completion_args(messages), stream=True)
 
