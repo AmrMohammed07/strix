@@ -13,7 +13,39 @@ Use this tool when:
 - You are a subagent working on a specific subtask
 - You have completed your assigned task
 - You want to report your findings to the parent agent
-- You are ready to terminate this subagent's execution</description>
+- You are ready to terminate this subagent's execution
+
+MANDATORY PRE-COMPLETION CHECKLIST FOR ALL SUBAGENTS:
+Before calling agent_finish, verify ALL of the following:
+
+FOR DISCOVERY AGENTS:
+[ ] All assigned endpoints have been tested (marked in /workspace/endpoint_checklist.md)
+[ ] All potential findings have been passed to Validation Agents
+[ ] Raw HTTP request + response captured for every potential finding
+[ ] /workspace/endpoint_checklist.md has been updated with testing status for all endpoints
+
+FOR VALIDATION AGENTS:
+[ ] Think tool was used to answer all 5 Real Impact Gate questions
+[ ] Exploitation was reproduced end-to-end with tangible output
+[ ] Two independent confirmation signals are documented
+[ ] Complete raw HTTP request captured (saved to /workspace/validation_[type]_request.txt)
+[ ] Complete raw HTTP response captured (saved to /workspace/validation_[type]_response.txt)
+[ ] All 10 pre-report checklist items verified
+[ ] Either: Reporting Agent was spawned (validation PASSED) OR reason for failure documented (validation FAILED)
+
+FOR REPORTING AGENTS:
+[ ] create_vulnerability_report was called with ALL required parameters
+[ ] technical_analysis includes COMPLETE raw HTTP request with vulnerable parameter marked
+[ ] technical_analysis includes COMPLETE raw HTTP response with proof highlighted
+[ ] poc_description includes complete UI reproduction steps (every click and input)
+[ ] impact is specific (not generic — names exact data, exact users, exact consequence)
+[ ] All 11 sections are complete
+
+VALIDATION AGENT RESULT REPORTING:
+When reporting validation results to parent via result_summary, MUST include:
+- VALIDATION RESULT: PASSED / FAILED
+- If PASSED: "2 confirmation signals: [signal 1] AND [signal 2]. Real data extracted: [exact quote]. Reporting Agent spawned."
+- If FAILED: "Validation failed because: [specific reason]. The finding is [discarded/downgraded]. Reason: [technical explanation]."</description>
     <details>This replaces the previous finish_scan tool and handles both sub-agent completion
   and main agent completion. When a sub-agent finishes, it can report its findings
   back to the parent agent for coordination.</details>
@@ -59,13 +91,67 @@ Use this tool when:
   <tool name="create_agent">
     <description>Create and spawn a new agent to handle a specific subtask.
 
-Only create a new agent if no existing agent is handling the specific task.</description>
+Only create a new agent if no existing agent is handling the specific task.
+
+MANDATORY AGENT CREATION RULES:
+
+1. USE THINK TOOL FIRST: Before creating any agent, use the think tool to define:
+   - What is the agent's EXACT, SINGULAR task?
+   - What inputs does it need from /workspace files?
+   - What output will it produce and where will it save it?
+   - How will you verify it completed successfully?
+
+2. MANDATORY 3-AGENT CHAIN PER FINDING (black-box):
+   Discovery Agent → Validation Agent → Reporting Agent
+   FORBIDDEN: Skipping the Validation Agent step
+   FORBIDDEN: Reporting Agent creating reports without Validation Agent confirmation
+
+3. MANDATORY 4-AGENT CHAIN PER FINDING (white-box):
+   Discovery Agent → Validation Agent → Reporting Agent → Fixing Agent
+
+4. TASK DESCRIPTION MUST INCLUDE:
+   - What the agent should test/validate/report (specific endpoint, parameter, or vuln class)
+   - Where to read inputs from (/workspace files)
+   - What evidence to capture (raw HTTP request + response are ALWAYS required)
+   - What to output and where to save it
+   - Explicit reminders: "Use think tool before reporting", "Capture complete raw HTTP request and response"
+
+5. ONE JOB PER AGENT — ENFORCE STRICTLY:
+   GOOD: "Validate IDOR on GET /api/messages/{id} — User B accessing User A's messages"
+   BAD: "Test all API endpoints for all vulnerability types"
+
+6. AGENT SPECIALIZATION (MAXIMUM 5 SKILLS):
+   - Most agents: 1-2 closely related skills
+   - Complex contexts: up to 5 related skills
+   - FORBIDDEN: Agents with unrelated mixed skills
+
+7. VALIDATION AGENTS MUST:
+   - Be given the EXACT finding details from the Discovery Agent
+   - Have explicit instructions to: use think tool, capture raw HTTP, document 2 signals, answer Real Impact Gate
+   - Have explicit authority to DISCARD findings that fail validation
+
+8. REPORTING AGENTS MUST:
+   - Be given the COMPLETE evidence package from the Validation Agent
+   - Include raw HTTP request and response file paths in their task description
+   - Be explicitly told: "Include COMPLETE raw HTTP request and response in technical_analysis"
+
+FORBIDDEN PATTERNS:
+- Creating a Reporting Agent without a Validation Agent having run first
+- Creating agents with overlapping tasks (two agents testing the same endpoint)
+- Creating agents that skip the think tool mandate
+- Creating agents without specifying where they save output in /workspace</description>
     <details>The new agent inherits the parent's conversation history and context up to the point
   of creation, then continues with its assigned subtask. This enables decomposition
   of complex penetration testing tasks into specialized sub-agents.
 
   The agent runs asynchronously and independently, allowing the parent to continue
   immediately while the new agent executes its task in the background.
+
+  AGENT WORKFLOW ENFORCEMENT:
+  - Discovery Agents → find potential vulnerabilities, capture raw HTTP, pass to Validation Agents
+  - Validation Agents → prove exploitation end-to-end, document 2 signals, answer Real Impact Gate, decide pass/fail
+  - Reporting Agents → ONLY created after Validation passes, include complete raw HTTP in reports
+  - Fixing Agents (white-box only) → implement and test secure code fixes
 
   If you as a parent agent don't absolutely have anything to do while your subagents are running, you can use wait_for_message tool. The subagent will continue to run in the background, and update you when it's done.
   </details>

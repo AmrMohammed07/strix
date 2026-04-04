@@ -14,9 +14,56 @@ DO NOT USE:
 - For reporting multiple vulnerabilities at once. Use a separate create_vulnerability_report for each vulnerability.
 - To re-report a vulnerability that was already reported (even with different details)
 
+PRE-SUBMISSION MANDATORY CHECKLIST — ALL ITEMS MUST BE TRUE BEFORE CALLING THIS TOOL:
+[ ] The vulnerability has been validated end-to-end by a Validation Agent (not just detected by a scanner)
+[ ] At least TWO independent confirmation signals are documented
+[ ] Real exploitation has been demonstrated with tangible output (actual data extracted, actual action performed)
+[ ] The COMPLETE raw HTTP request is included in technical_analysis (all headers + full body)
+[ ] The COMPLETE raw HTTP response is included in technical_analysis (status + all headers + full body)
+[ ] The raw HTTP request has the vulnerable parameter marked with a comment (← VULNERABLE PARAMETER)
+[ ] The raw HTTP response has the proof highlighted (← THIS IS THE EXPLOITED RESULT)
+[ ] UI reproduction steps are complete (every click and input listed)
+[ ] The Real Impact Gate has been answered (all 5 questions answered with think tool)
+[ ] The Anti-False-Positive Engine checklist has been completed
+[ ] Severity is justified by demonstrated evidence — NOT by scanner rating, NOT by theoretical risk
+[ ] The finding is NOT a false positive (not DNS-only SSRF marked Critical, not missing headers marked High, not CORS on public endpoint, not XSS that only reflects in source)
+
+FORBIDDEN — NEVER submit this tool call if:
+- You only have a DNS callback (interactsh) for SSRF — this is informational ONLY
+- You have a 200 OK response but no actual sensitive data extracted (for IDOR)
+- You have XSS that reflects in HTML source but you have NOT confirmed browser execution in a headless browser
+- A scanner flagged it but you haven't manually verified it
+- Missing security headers are your primary finding (these are Low/Info at most)
+- Rate limiting is absent but you haven't demonstrated actual brute force viability AND verified no account lockout
+- CORS is on a public/unauthenticated endpoint
+
 White-box requirement (when you have access to the code): You MUST include code_locations with nested XML, including fix_before/fix_after on locations where a fix is proposed.
 
 DEDUPLICATION: If this tool returns with success=false and mentions a duplicate, DO NOT attempt to re-submit. The vulnerability has already been reported. Move on to testing other areas.
+
+RAW HTTP EVIDENCE — MANDATORY IN EVERY REPORT:
+The technical_analysis field MUST contain the COMPLETE raw HTTP request AND response for every finding.
+Format your technical_analysis to include:
+
+COMPLETE RAW HTTP REQUEST:
+```
+[METHOD] [PATH] HTTP/1.1
+Host: [target]
+[ALL HEADERS]
+Content-Length: [N]
+
+[COMPLETE REQUEST BODY — mark vulnerable parameter with ← VULNERABLE PARAMETER]
+```
+
+COMPLETE RAW HTTP RESPONSE:
+```
+HTTP/1.1 [STATUS CODE] [STATUS TEXT]
+[ALL RESPONSE HEADERS]
+
+[COMPLETE RESPONSE BODY up to 2000 chars — mark exploited proof with ← PROOF OF EXPLOITATION]
+```
+
+Both request and response are MANDATORY. A report missing either is INCOMPLETE and will not be accepted.
 
 Professional, customer-facing report rules (PDF-ready):
 - Do NOT include internal or system details: never mention local or absolute paths (e.g., "/workspace"), internal tools, agents, orchestrators, sandboxes, models, system prompts/instructions, connection issues, internal errors/logs/stack traces, or tester machine environment details.
@@ -25,13 +72,14 @@ Professional, customer-facing report rules (PDF-ready):
   1) Overview
   2) Severity and CVSS (vector only)
   3) Affected asset(s)
-  4) Technical details
+  4) Technical details (MUST include complete raw HTTP request AND response)
   5) Proof of concept (repro steps plus code)
-  6) Impact
+  6) Impact (MUST be specific — name exact data compromised, exact users affected, exact business consequence)
   7) Remediation
-  8) Evidence (optional request/response excerpts, etc.) in the technical analysis field.
+  8) Evidence (complete raw HTTP request/response with vulnerability indicators) in the technical analysis field.
 - Numbered steps are allowed ONLY within the proof of concept and remediation sections. Elsewhere, use clear, concise paragraphs suitable for customer-facing reports.
 - Language must be precise and non-vague; avoid hedging.
+- Impact section MUST follow this format: "An attacker who exploits this vulnerability can [SPECIFIC ACTION] which results in [SPECIFIC CONSEQUENCE] affecting [SPECIFIC USERS/DATA]. This [GDPR/HIPAA/PCI-DSS implication if applicable]."
 </description>
     <parameters>
       <parameter name="title" type="string" required="true">

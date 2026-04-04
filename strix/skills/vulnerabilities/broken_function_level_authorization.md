@@ -1,11 +1,49 @@
 ---
 name: broken-function-level-authorization
-description: BFLA testing for action-level authorization failures across endpoints, admin functions, and API operations
+description: BFLA testing for action-level authorization failures — admin function access, privilege escalation, UI-driven discovery, mandatory real impact with state change proof, and strict false-positive rejection for read-only or intentionally public endpoints
 ---
 
 # Broken Function Level Authorization (BFLA)
 
 BFLA is action-level authorization failure: callers invoke functions (endpoints, mutations, admin tools) they are not entitled to. It appears when enforcement differs across transports, gateways, roles, or when services trust client hints. Bind subject × action at the service that performs the action.
+
+## Real Impact Gate — Answer Before Reporting
+
+1. **Did a lower-privileged user successfully perform a privileged action?**
+   - Required: actually perform the action AND observe its effect (state change, data access, configuration change)
+   - NOT sufficient: receive a 200 status code without confirmation of the action's effect
+   - NOT sufficient: receive the same response as an unauthorized attempt (server silently ignores the parameter)
+
+2. **Is the accessed function actually restricted?**
+   - Check API documentation — is this endpoint documented as admin-only?
+   - Check if the function produces a meaningful result (vs. returning a stubbed/placeholder response)
+   - Confirm the function works for an admin user and is denied to regular users by design
+
+3. **What specific privileged action was completed?**
+   - Name the exact action: "Created an admin user", "Changed another user's role to admin", "Issued a $500 credit", "Deleted another user's account"
+   - Show the before/after state in the database or UI
+
+4. **Have you confirmed with 2+ independent signals?**
+   - Signal 1: lower-privileged user's request to admin endpoint returned 200 with meaningful response
+   - Signal 2: the effect of the action is confirmed in the system (user now has admin role, credit was issued, etc.)
+
+## Mandatory UI Steps for BFLA Discovery
+```
+Step 1: Log in as User A (regular user) and enable proxy
+Step 2: Navigate through the application — what actions are available in the UI?
+Step 3: Open browser DevTools → Network tab
+Step 4: Note ALL API calls made during normal navigation
+Step 5: Try to discover admin endpoints:
+  - Navigate to /admin, /administrator, /manage, /dashboard/admin, /panel, /control
+  - Look for admin-related API calls in proxy history
+  - Search JS bundles for admin-related routes and endpoints
+Step 6: For each discovered admin endpoint:
+  a. Note the HTTP method and request format
+  b. Try to call it with User A's (non-admin) session
+  c. If you get 200: check if the response contains admin data or if the action actually executed
+  d. Verify the effect: navigate to the affected resource and confirm the change
+Step 7: Screenshot: the unauthorized action's effect confirmed in the UI or database
+```
 
 ## Attack Surface
 

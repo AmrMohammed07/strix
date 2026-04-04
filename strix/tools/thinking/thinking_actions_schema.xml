@@ -1,13 +1,67 @@
 <tools>
   <tool name="think">
     <description>Use the tool to think about something. It will not obtain new information or change the
-  database. Use it when complex reasoning or some cache memory is needed.</description>
+  database. Use it when complex reasoning or some cache memory is needed.
+
+MANDATORY USAGE — THIS TOOL IS REQUIRED BEFORE EVERY MAJOR SECURITY DECISION.
+
+You MUST use this tool BEFORE:
+1. Reporting any vulnerability (use it to answer all 5 Real Impact Gate questions)
+2. Spawning a Reporting Agent (use it to verify all 10 pre-report checklist items)
+3. Calling finish_scan (use it to verify all 10 completion criteria)
+4. Concluding an endpoint has no vulnerabilities (use it to verify all applicable vuln classes were tried)
+5. Assigning any severity level (use it to justify with actual evidence)
+6. Spawning any Pass 2/3/4 agents (use it to review gaps from previous passes)
+7. Testing CORS (use it to verify the endpoint returns sensitive data first)
+8. Reporting SSRF (use it to verify you achieved more than a DNS callback)
+9. Reporting rate limit findings (use it to verify brute force is actually viable)
+10. Reporting XSS (use it to verify headless browser execution was confirmed)
+
+FORBIDDEN: Skipping the think tool and reporting directly without documented reasoning.
+FORBIDDEN: Using think as a rubber stamp — it must contain genuine, substantive reasoning.
+
+THINK TOOL TEMPLATE FOR VULNERABILITY REPORTING:
+Before reporting any vulnerability, your thought MUST cover:
+  FINDING: [precise technical description of the vulnerability]
+  SIGNAL 1: [first independent confirmation — exact evidence]
+  SIGNAL 2: [second independent confirmation — exact, independent evidence]
+  EXPLOITATION PROOF: [exact tangible output — quoted data, executed code, performed action]
+  REAL IMPACT Q1: Does this have real business impact? [specific answer]
+  REAL IMPACT Q2: What specific data/action is compromised? [exact data types]
+  REAL IMPACT Q3: Who is affected and at what scale? [user population]
+  REAL IMPACT Q4: Exploitable by external attacker? [yes/no + conditions]
+  REAL IMPACT Q5: Two independent signals? [list both]
+  ALTERNATIVE EXPLANATIONS RULED OUT: [caching? encoding? design intent? server load?]
+  RAW HTTP CAPTURED: [yes/no — if no, capture before reporting]
+  UI STEPS DOCUMENTED: [yes/no — if no, document before reporting]
+  SEVERITY JUSTIFICATION: [justified by evidence, not intuition]
+  FALSE POSITIVE CHECK: [is this one of the known false positive categories? if yes, why not?]
+  CONCLUSION: [proceed to report / downgrade to info / discard — with reason]
+
+THINK TOOL TEMPLATE FOR SCAN COMPLETION:
+Before calling finish_scan, your thought MUST confirm:
+  PASS 1 (Broad Discovery): COMPLETE? [yes/no]
+  PASS 2 (Advanced Bypass): COMPLETE? [yes/no]
+  PASS 3 (Expert Techniques): COMPLETE? [yes/no]
+  PASS 4 (Final Validation): COMPLETE? [yes/no]
+  ENDPOINT CHECKLIST 100%: [yes/no — if no, STOP and cover remaining endpoints]
+  ALL FINDINGS VALIDATED: [yes/no — by Validation Agents]
+  ALL REPORTS HAVE RAW HTTP: [yes/no — request AND response in every report]
+  ALL REPORTS HAVE 11 SECTIONS: [yes/no]
+  EXECUTIVE SUMMARY READY: [yes/no]
+  ZERO PENDING ITEMS: [yes/no]
+  FINAL DECISION: [proceed to finish_scan / continue testing — with reason]</description>
     <details>This tool creates dedicated space for structured thinking during complex tasks,
   particularly useful for:
+  - Vulnerability validation: Answering all Real Impact Gate questions before reporting
+  - Pre-report checklist: Verifying all 10 mandatory items before submitting a vulnerability report
+  - Scan completion audit: Verifying all 10 completion criteria before calling finish_scan
   - Tool output analysis: When you need to carefully process the output of previous tool calls
   - Policy-heavy environments: When you need to follow detailed guidelines and verify compliance
   - Sequential decision making: When each action builds on previous ones and mistakes are costly
-  - Multi-step problem solving: When you need to break down complex problems into manageable steps</details>
+  - Multi-step problem solving: When you need to break down complex problems into manageable steps
+  - False positive prevention: Ruling out alternative explanations before reporting
+  - Severity assessment: Justifying severity based on actual evidence rather than intuition</details>
     <parameters>
       <parameter name="thought" type="string" required="true">
         <description>The thought or reasoning to record</description>

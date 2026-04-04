@@ -1,264 +1,494 @@
 ---
 name: web-recon
-description: Web reconnaissance techniques for bug bounty — subdomain enumeration, JS analysis, endpoint discovery, and fingerprinting
+description: Exhaustive web reconnaissance — documentation reading, JS analysis, subdomain enumeration, technology fingerprinting, endpoint mapping, attack surface construction — mandatory first phase before all vulnerability testing
 ---
 
-# Web Reconnaissance
+# Web Reconnaissance — Complete Attack Surface Construction
 
-Recon determines attack surface before active testing. Comprehensive recon finds assets, endpoints, and technologies that manual browsing misses — and in bug bounty, more surface area = more bugs. Speed and breadth win.
+Reconnaissance is the foundation of every successful security assessment. The quality of your recon determines the quality of your entire scan. An endpoint missed during recon is an endpoint that never gets tested. Read all documentation before touching any vulnerability test.
 
-## Subdomain Enumeration
+**CRITICAL RULE: DO NOT BEGIN VULNERABILITY TESTING UNTIL RECON IS COMPLETE.**
 
-### Passive (No Direct Target Interaction)
+---
+
+## Mandatory Recon Checklist
+
+```
+[ ] Documentation read (all API specs, Swagger, OpenAPI, GraphQL schema, help pages)
+[ ] robots.txt and sitemap.xml parsed — every disallowed path is a target
+[ ] All JS files downloaded and analyzed
+[ ] API endpoints extracted from JS bundles
+[ ] Secrets/API keys searched in JS
+[ ] Subdomain enumeration completed
+[ ] Port scanning completed on all live hosts
+[ ] Technology stack identified
+[ ] WAF/CDN/proxy detected
+[ ] Authentication mechanisms identified
+[ ] Endpoint checklist created at /workspace/endpoint_checklist.md
+[ ] Recon report saved to /workspace/recon_report.md
+```
+
+---
+
+## Phase 1: Documentation & API Specification Discovery
+
+### Try All Documentation Paths
+```bash
+TARGET="https://target.com"
+
+DOC_PATHS=(
+    "/swagger.json" "/swagger.yaml" "/swagger/v1/swagger.json"
+    "/swagger-ui.html" "/swagger-ui/" "/swagger-ui/index.html"
+    "/api-docs" "/api-docs.json" "/api/docs" "/api/documentation"
+    "/openapi.json" "/openapi.yaml" "/openapi" "/api/openapi.json"
+    "/v1/docs" "/v2/docs" "/v3/docs" "/api/v1/docs" "/api/v2/docs"
+    "/redoc" "/redoc/" "/redoc/index.html"
+    "/.well-known/openid-configuration" "/.well-known/oauth-authorization-server"
+    "/graphql" "/graphiql" "/graphql/playground" "/api/graphql"
+    "/docs" "/documentation" "/developer/docs" "/api/schema" "/api/spec"
+    "/api/explorer" "/api/console" "/api/health" "/api/status" "/api/version"
+)
+
+mkdir -p /workspace/docs
+for path in "${DOC_PATHS[@]}"; do
+    status=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 5 "${TARGET}${path}")
+    if [[ "$status" == "200" ]]; then
+        echo "[FOUND] ${TARGET}${path}"
+        filename=$(echo "$path" | tr '/' '_' | tr '?' '_').json
+        curl -s -L "${TARGET}${path}" -o "/workspace/docs/${filename}"
+    fi
+done
+```
+
+### Parse OpenAPI/Swagger Specification
+```python
+import json, yaml, requests
+
+def parse_api_spec(spec_url):
+    r = requests.get(spec_url, timeout=15)
+    try:
+        spec = yaml.safe_load(r.text)
+    except:
+        spec = r.json()
+    
+    info = spec.get("info", {})
+    print(f"API: {info.get('title')} v{info.get('version')}")
+    
+    base_path = ""
+    if "servers" in spec:
+        base_path = spec["servers"][0].get("url", "").rstrip("/")
+    elif "basePath" in spec:
+        base_path = spec.get("basePath", "")
+    
+    endpoints = []
+    for path, methods in spec.get("paths", {}).items():
+        for method, details in methods.items():
+            if method not in ["get","post","put","patch","delete","head","options"]:
+                continue
+            
+            params = details.get("parameters", []) + methods.get("parameters", [])
+            body = details.get("requestBody", {}).get("content", {})
+            body_fields = []
+            for ct, sw in body.items():
+                if "properties" in sw.get("schema", {}):
+                    body_fields = list(sw["schema"]["properties"].keys())
+            
+            ep = {
+                "method": method.upper(),
+                "url": f"{base_path}{path}",
+                "summary": details.get("summary", ""),
+                "parameters": [f"{p.get('in')}.{p.get('name')}" for p in params],
+                "body_fields": body_fields,
+                "auth_required": bool(details.get("security", spec.get("security", []))),
+                "deprecated": details.get("deprecated", False)
+            }
+            endpoints.append(ep)
+            print(f"  {ep['method']} {ep['url']} — {ep['summary']}")
+    
+    return endpoints
+```
+
+### GraphQL Introspection
+```python
+def graphql_introspect(graphql_url, session_cookie=None):
+    introspection_query = {"query": """
+    { __schema {
+        queryType { name } mutationType { name } subscriptionType { name }
+        types {
+            name kind
+            fields { name args { name } type { name kind } }
+        }
+    } }"""}
+    
+    headers = {"Content-Type": "application/json"}
+    if session_cookie:
+        headers["Cookie"] = f"session={session_cookie}"
+    
+    r = requests.post(graphql_url, json=introspection_query, headers=headers)
+    if r.status_code == 200 and "data" in r.json():
+        schema = r.json()["data"]["__schema"]
+        with open("/workspace/graphql_schema.json", "w") as f:
+            json.dump(schema, f, indent=2)
+        print("GraphQL introspection ENABLED — full schema saved")
+        return schema
+    return None
+```
+
+### Read Application Documentation
+```python
+# Also navigate to and read:
+# /help, /help-center, /docs, /faq, /pricing, /plans
+# These pages reveal features, limits, business rules that automated scanning misses
+help_paths = ["/help", "/help-center", "/faq", "/pricing", "/plans", "/features",
+              "/about", "/support", "/guide", "/tutorial", "/getting-started"]
+
+for path in help_paths:
+    r = requests.get(f"https://target.com{path}", timeout=10)
+    if r.status_code == 200:
+        print(f"Documentation page found: {path}")
+        # Save for manual review
+        with open(f"/workspace/docs/page_{path.replace('/','_')}.html", "w") as f:
+            f.write(r.text)
+```
+
+---
+
+## Phase 2: JavaScript Analysis
 
 ```bash
-# Certificate Transparency logs
-subfinder -d target.com -all -o subs.txt
-amass enum -passive -d target.com -o subs.txt
-curl "https://crt.sh/?q=%.target.com&output=json" | jq '.[].name_value' | sort -u
+#!/bin/bash
+mkdir -p /workspace/js_files /workspace/js_deobfuscated
 
-# DNS brute force wordlists
-puredns bruteforce /usr/share/seclists/Discovery/DNS/bitquark-subdomains-top100000.txt target.com
+# Discover all JS files
+katana -u https://target.com -jc -d 5 -o /workspace/katana_output.txt 2>/dev/null
+grep -E "\.js($|\?)" /workspace/katana_output.txt | sort -u > /workspace/js_urls.txt
 
-# Shodan/Censys/Fofa/Zoomeye
-shodan search "ssl.cert.subject.CN:*.target.com" --fields hostnames,ip_str
+# Download all JS files
+while IFS= read -r url; do
+    filename=$(echo "$url" | md5sum | cut -d' ' -f1).js
+    curl -s --max-time 30 "$url" -o "/workspace/js_files/${filename}" 2>/dev/null
+done < /workspace/js_urls.txt
 
-# Google dork
-site:*.target.com -www
+# Deobfuscate
+for f in /workspace/js_files/*.js; do
+    js-beautify "$f" -o "/workspace/js_deobfuscated/$(basename $f)" 2>/dev/null
+done
 
-# Archive / Wayback
-gau target.com | grep "://" | cut -d "/" -f 3 | sort -u
-waybackurls target.com | grep "://" | cut -d "/" -f 3 | sort -u
-
-# GitHub/GitLab
-github-subdomains -d target.com -t GITHUB_TOKEN
+echo "JS files downloaded: $(ls /workspace/js_files/*.js 2>/dev/null | wc -l)"
 ```
 
-### Active (Resolving Subdomains)
+```python
+import re, os, json
+
+def analyze_js_files(js_dir="/workspace/js_deobfuscated"):
+    results = {"api_endpoints": set(), "secrets": [], "websocket_urls": set(),
+               "internal_urls": set(), "interesting_comments": []}
+    
+    patterns = {
+        "api_endpoints": [
+            r'["\x27](/(?:api|v\d+|rest|graphql)[^"\x27\s\)]{3,100})["\x27]',
+            r'(?:fetch|axios\.(?:get|post|put|delete|patch))\s*\(\s*["\x27]([^"\x27\s]{10,150})["\x27]',
+            r'(?:baseURL|apiUrl|API_URL|endpoint|BASE_URL)\s*[:=]\s*["\x27]([^"\x27]{5,100})["\x27]',
+        ],
+        "secrets": [
+            r'(?:api[_-]?key|client[_-]?secret|access[_-]?token|private[_-]?key|auth[_-]?token)\s*[:=]\s*["\x27]([A-Za-z0-9+/=_\-]{16,100})["\x27]',
+            r'(?:AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY)\s*[:=]\s*["\x27]([A-Za-z0-9+/=]{16,})["\x27]',
+            r'(?:STRIPE_|TWILIO_|SENDGRID_|FIREBASE_)[A-Z_]+\s*[:=]\s*["\x27]([^"\x27]{16,})["\x27]',
+        ],
+        "websocket_urls": [
+            r'(?:ws|wss)://[^\s"\']{5,100}',
+            r'new WebSocket\(["\x27]([^"\x27]{5,100})["\x27]\)',
+        ],
+        "internal_urls": [
+            r'https?://(?:localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+)[^\s"\']{0,100}',
+        ]
+    }
+    
+    for filename in os.listdir(js_dir):
+        if not filename.endswith(".js"):
+            continue
+        
+        with open(os.path.join(js_dir, filename), 'r', errors='ignore') as f:
+            content = f.read()
+        
+        for cat, pats in patterns.items():
+            for pat in pats:
+                matches = re.findall(pat, content, re.IGNORECASE)
+                for m in matches:
+                    val = m if isinstance(m, str) else m[0]
+                    if cat == "api_endpoints":
+                        results["api_endpoints"].add(val)
+                    elif cat == "secrets":
+                        results["secrets"].append({"value": val[:50], "file": filename})
+                    elif cat == "websocket_urls":
+                        results["websocket_urls"].add(val)
+                    elif cat == "internal_urls":
+                        results["internal_urls"].add(val)
+    
+    print(f"\nJS Analysis: {len(results['api_endpoints'])} endpoints, "
+          f"{len(results['secrets'])} potential secrets, "
+          f"{len(results['websocket_urls'])} WebSocket URLs")
+    
+    if results["secrets"]:
+        print("[!] POTENTIAL SECRETS FOUND — review /workspace/js_analysis_results.json")
+    
+    with open("/workspace/js_analysis_results.json", "w") as f:
+        json.dump({k: list(v) if isinstance(v, set) else v for k, v in results.items()}, f, indent=2)
+    
+    return results
+```
+
+---
+
+## Phase 3: Subdomain Enumeration
 
 ```bash
-# DNS resolution
-massdns -r /opt/resolvers.txt -t A subs.txt -o S > resolved.txt
-dnsx -l subs.txt -resp -a -aaaa -cname -o dnsx-out.txt
+DOMAIN="target.com"
 
-# Virtual host discovery
-ffuf -w subs.txt -u https://IP/ -H "Host: FUZZ.target.com" -mc 200,301,302,403
+# Passive enumeration
+subfinder -d $DOMAIN -all -recursive -o /workspace/subdomains_passive.txt 2>/dev/null
 
-# Wildcard detection
-puredns -w wordlist.txt target.com --resolvers resolvers.txt
+# Active brute force (download wordlist if needed)
+[ ! -f /home/pentester/tools/wordlists/subdomains.txt ] && \
+    curl -s "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-5000.txt" \
+    -o /home/pentester/tools/wordlists/subdomains.txt
+
+ffuf -u "https://FUZZ.$DOMAIN" \
+    -w /home/pentester/tools/wordlists/subdomains.txt \
+    -mc 200,204,301,302,307,403 -ac \
+    -o /workspace/subdomains_active.json -of json 2>/dev/null
+
+# Combine and resolve
+cat /workspace/subdomains_passive.txt 2>/dev/null \
+    <(cat /workspace/subdomains_active.json 2>/dev/null | python3 -c "import sys,json; [print(r['input']['FUZZ']+'.'"$DOMAIN"') for r in json.load(sys.stdin).get('results',[])]") \
+    | sort -u > /workspace/all_subdomains.txt
+
+# Probe for live hosts
+httpx -l /workspace/all_subdomains.txt \
+    -title -tech-detect -status-code -follow-redirects \
+    -o /workspace/live_subdomains.txt 2>/dev/null
+
+echo "Live subdomains: $(wc -l < /workspace/live_subdomains.txt)"
 ```
 
-## Port / Service Discovery
+---
+
+## Phase 4: Port Scanning
 
 ```bash
-# Fast port scan
-naabu -l hosts.txt -p - -o naabu-out.txt
-masscan -p1-65535 --rate 10000 IP/range -oG masscan.txt
+# Fast port scan on all live hosts
+awk '{print $1}' /workspace/live_subdomains.txt 2>/dev/null | \
+    sort -u > /workspace/live_ips.txt
 
-# Service fingerprint
-nmap -sV -sC -p $(cat open_ports.txt) IP
+naabu -iL /workspace/live_ips.txt \
+    -top-ports 1000 \
+    -o /workspace/open_ports.txt 2>/dev/null
 
-# HTTP service discovery
-httpx -l hosts.txt -ports 80,443,8080,8443,8888,3000,4000,5000 -o httpx-out.txt
-httpx -l hosts.txt -tech-detect -title -status-code -o httpx-full.txt
+# Service detection on interesting ports
+nmap -sV --open -iL /workspace/live_ips.txt \
+    -p 21,22,23,25,80,443,3000,3306,5000,5432,6379,8080,8443,8888,9000,9200,27017 \
+    -oN /workspace/nmap_services.txt 2>/dev/null
+
+echo "Non-standard open ports:"
+grep "open" /workspace/nmap_services.txt | grep -v "http\|https\|ssh"
 ```
 
-## Technology Fingerprinting
+---
+
+## Phase 5: Technology Fingerprinting
 
 ```bash
-# Web tech stack
-whatweb -a 3 https://target.com
-wappalyzer --url https://target.com
+# WAF detection
+wafw00f https://target.com -a 2>/dev/null
 
-# CMS detection
-cmseek -u https://target.com
-wpscan --url https://target.com --enumerate  # WordPress
-droopescan scan drupal -u https://target.com
+# Technology stack
+httpx -u https://target.com -tech-detect -title -server -status-code
 
-# Header analysis
-curl -I https://target.com
-# Look for: Server, X-Powered-By, X-Generator, X-Framework
+# Vulnerable JS libraries
+retire --js --jspath /workspace/js_files/ \
+    --outputformat json --outputpath /workspace/vulnerable_libraries.json 2>/dev/null
 
-# Favicon hash
-# Calculate favicon hash → search in Shodan/Censys for similar infra
-python3 -c "import hashlib,base64,requests; r=requests.get('https://target.com/favicon.ico'); print(hashlib.md5(base64.encodebytes(r.content)).hexdigest())"
+# Common sensitive files
+SENSITIVE_PATHS=(
+    "/.git/config" "/.git/HEAD" "/.env" "/.env.local" "/.env.production"
+    "/config.json" "/settings.json" "/appsettings.json" "/web.config"
+    "/phpinfo.php" "/server-status" "/server-info" "/actuator/env"
+    "/backup.zip" "/db.sql" "/database.sql" "/.DS_Store"
+    "/robots.txt" "/crossdomain.xml" "/security.txt" "/.well-known/security.txt"
+)
+
+echo "Checking sensitive paths..."
+for path in "${SENSITIVE_PATHS[@]}"; do
+    status=$(curl -s -o /tmp/resp -w "%{http_code}" -L --max-time 5 "https://target.com${path}")
+    if [[ "$status" == "200" ]]; then
+        size=$(wc -c < /tmp/resp)
+        echo "[FOUND $size bytes] https://target.com${path}"
+    elif [[ "$status" == "403" ]]; then
+        echo "[403 Forbidden] https://target.com${path} (exists but blocked)"
+    fi
+done
 ```
 
-## URL / Endpoint Discovery
+---
 
-```bash
-# Crawling
-katana -u https://target.com -d 5 -jc -o katana-out.txt
-gospider -s https://target.com -d 3 -o spider-out
+## Phase 6: robots.txt and Sitemap Parsing
 
-# Historical URLs
-gau --threads 5 target.com | tee gau-out.txt
-waybackurls target.com | tee wayback-out.txt
-hakrawler -url https://target.com -depth 3
+```python
+def parse_robots_and_sitemap(base_url):
+    discovered = []
+    
+    # robots.txt
+    r = requests.get(f"{base_url}/robots.txt")
+    if r.status_code == 200:
+        print("robots.txt:")
+        for line in r.text.split('\n'):
+            print(f"  {line}")
+            # Disallowed paths are HIGH PRIORITY targets
+            if line.lower().startswith("disallow:"):
+                path = line.split(":", 1)[1].strip()
+                if path and path != "/":
+                    discovered.append(f"[robots-disallowed] {base_url}{path}")
+            elif line.lower().startswith("sitemap:"):
+                sitemap_url = line.split(":", 1)[1].strip()
+                # Parse sitemap recursively
+                discovered.extend(parse_sitemap(sitemap_url))
+    
+    # Sitemap
+    for sitemap_url in [f"{base_url}/sitemap.xml", f"{base_url}/sitemap_index.xml"]:
+        r = requests.get(sitemap_url)
+        if r.status_code == 200:
+            discovered.extend(parse_sitemap(sitemap_url))
+    
+    return discovered
 
-# Combine and deduplicate
-cat gau-out.txt wayback-out.txt katana-out.txt | sort -u | httpx -silent -o live-endpoints.txt
-
-# Parameter extraction
-cat live-endpoints.txt | grep "?" | qsreplace "FUZZ" | sort -u > params.txt
-
-# JS file discovery
-cat live-endpoints.txt | grep "\.js$" | sort -u > jsfiles.txt
+def parse_sitemap(sitemap_url, depth=0):
+    if depth > 3:
+        return []
+    
+    urls = []
+    r = requests.get(sitemap_url, timeout=10)
+    if r.status_code != 200:
+        return []
+    
+    # Extract all URLs
+    import re
+    urls_in_sitemap = re.findall(r'<loc>([^<]+)</loc>', r.text)
+    
+    for url in urls_in_sitemap:
+        if ".xml" in url.lower():
+            # Nested sitemap
+            urls.extend(parse_sitemap(url, depth+1))
+        else:
+            urls.append(url)
+    
+    return urls
 ```
 
-## JavaScript Analysis
+---
 
-```bash
-# Extract endpoints and secrets from JS
-cat jsfiles.txt | xargs -I{} curl -s {} | grep -oP '(\/api\/[^"' ]+)|(\/v[0-9]+\/[^"' ]+)'
-subjs -i live-endpoints.txt -o jsfiles.txt
-getjswords jsfiles.txt  # Extract potential params
+## Phase 7: Build the Endpoint Checklist
 
-# Secrets in JS
-truffleHog --regex --entropy=False https://github.com/target/repo
-secretfinder -i https://target.com/app.js -o cli
-
-# LinkFinder for endpoints
-python3 linkfinder.py -i https://target.com/app.js -o cli
-
-# Manual JS analysis patterns
-grep -E "(api_key|apikey|secret|token|password|passwd|auth|bearer)" *.js
-grep -E "fetch\(|axios\.|XMLHttpRequest|\.ajax\(" *.js
-grep -E "(\/api\/|\/v1\/|\/v2\/|\/internal\/|\/admin\/)" *.js
+```python
+def build_endpoint_checklist():
+    """Compile ALL discovered endpoints into the tracking checklist"""
+    
+    all_endpoints = []
+    
+    # From API spec parsing
+    if os.path.exists("/workspace/api_endpoints.json"):
+        with open("/workspace/api_endpoints.json") as f:
+            spec_endpoints = json.load(f)
+            for ep in spec_endpoints:
+                all_endpoints.append(f"- [ ] {ep['method']} {ep['url']} — {ep.get('summary','')}")
+    
+    # From JS analysis
+    if os.path.exists("/workspace/js_analysis_results.json"):
+        with open("/workspace/js_analysis_results.json") as f:
+            js_results = json.load(f)
+            for endpoint in js_results.get("api_endpoints", []):
+                all_endpoints.append(f"- [ ] GET https://target.com{endpoint} [from JS]")
+    
+    # From crawling
+    if os.path.exists("/workspace/katana_output.txt"):
+        with open("/workspace/katana_output.txt") as f:
+            for line in f:
+                url = line.strip()
+                if url:
+                    all_endpoints.append(f"- [ ] GET {url} [from crawl]")
+    
+    # Deduplicate
+    all_endpoints = list(dict.fromkeys(all_endpoints))
+    
+    with open("/workspace/endpoint_checklist.md", "w") as f:
+        f.write("# Endpoint Coverage Checklist\n")
+        f.write("# Status: [ ] pending | [~] in-progress | [x] tested | [!] vuln-found | [s] skipped\n\n")
+        
+        categories = {
+            "## Authentication Endpoints": [e for e in all_endpoints if any(k in e for k in ["/login","/register","/auth","/oauth","/reset","/verify"])],
+            "## Admin Endpoints": [e for e in all_endpoints if any(k in e for k in ["/admin","/manage","/internal","/staff","/superadmin"])],
+            "## API Endpoints": [e for e in all_endpoints if "/api/" in e],
+            "## Public Pages": [e for e in all_endpoints if "/api/" not in e and not any(k in e for k in ["/login","/admin"])],
+        }
+        
+        written = set()
+        for cat_name, cat_endpoints in categories.items():
+            unique = [e for e in cat_endpoints if e not in written]
+            if unique:
+                f.write(f"{cat_name}\n\n")
+                for ep in sorted(unique):
+                    f.write(f"{ep}\n")
+                    written.add(ep)
+                f.write("\n")
+        
+        # Remaining
+        remaining = [e for e in all_endpoints if e not in written]
+        if remaining:
+            f.write("## Other Endpoints\n\n")
+            for ep in sorted(remaining):
+                f.write(f"{ep}\n")
+    
+    print(f"Endpoint checklist created: /workspace/endpoint_checklist.md")
+    print(f"Total endpoints: {len(all_endpoints)}")
 ```
 
-## Directory / File Fuzzing
+---
 
-```bash
-# Directory brute force
-ffuf -u https://target.com/FUZZ -w /usr/share/seclists/Discovery/Web-Content/raft-large-files.txt -mc 200,301,302,403 -o ffuf-dirs.txt
+## Recon Report Template
 
-# Wordlists
-# /usr/share/seclists/Discovery/Web-Content/big.txt
-# /usr/share/seclists/Discovery/Web-Content/raft-large-files.txt
-# /usr/share/seclists/Discovery/Web-Content/common.txt
+Save to `/workspace/recon_report.md`:
 
-# API endpoint fuzzing
-ffuf -u https://target.com/api/v1/FUZZ -w /usr/share/seclists/Discovery/Web-Content/api/api-endpoints.txt
+```markdown
+# Recon Report — TARGET — TIMESTAMP
 
-# Parameter fuzzing
-ffuf -u https://target.com/search?FUZZ=test -w /usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt
+## Technology Stack
+- Frontend: [React/Vue/Angular/etc.]
+- Backend: [Node.js/Python/PHP/Java/etc.]
+- Framework: [Express/Django/Laravel/etc.]
+- Database: [inferred]
+- Infrastructure: [AWS/GCP/Azure/etc.]
+- CDN/WAF: [Cloudflare/AWS WAF/etc.]
+- Auth mechanism: [JWT/session/OAuth]
 
-# Backup file hunting
-ffuf -u https://target.com/FUZZ -w backups.txt  # .bak, .old, .zip, .tar.gz, .sql
+## Documentation Found
+- API spec: [URLs and endpoint count]
+- GraphQL: [introspection enabled/disabled]
+- Help pages: [list]
+
+## Key JS Analysis Findings
+- API endpoints from JS: [N]
+- Potential secrets: [describe — do NOT include actual secret values in report]
+- WebSocket URLs: [list]
+- Internal URLs: [list]
+
+## Subdomain Inventory
+[List all live subdomains with status/tech]
+
+## Attack Surface Priorities
+1. [Most interesting — explain why]
+2. [Second priority]
+3. [Third priority]
+
+## Endpoint Checklist
+Created: /workspace/endpoint_checklist.md
+Total endpoints: [N]
 ```
-
-## Source Code & Git Exposure
-
-```bash
-# Git repo exposure
-git-dumper https://target.com/.git/ /tmp/git-dump
-# Check: /.git/config, /.git/HEAD, /.git/COMMIT_EDITMSG
-
-# Common source code exposure
-ffuf -u https://target.com/FUZZ -w source_exposure.txt
-# Paths: /.env, /.env.local, /config.php, /config.yml, /wp-config.php.bak
-# /app.config, /web.config, /appsettings.json, /.htpasswd, /phpinfo.php
-
-# SVN
-/.svn/entries → reveals source structure and file paths
-
-# DS_Store
-.DS_Store parser: python3 dsstore.py https://target.com/.DS_Store
-```
-
-## Cloud Asset Discovery
-
-```bash
-# S3 bucket enumeration
-S3Scanner scan --buckets target-backup,target-dev,target-prod,target-assets
-# Patterns: [company]-[env], [company]-[service], [company]-[year]
-aws s3 ls s3://target-assets --no-sign-request
-
-# Google Cloud Storage
-gsutil ls gs://target-backup
-
-# Azure Blob
-az storage blob list --container-name target --account-name targetstg
-
-# Google Dorks for cloud assets
-site:s3.amazonaws.com "target.com"
-site:blob.core.windows.net "target"
-site:storage.googleapis.com "target"
-```
-
-## Leaked Credentials & Secrets
-
-```bash
-# GitHub dork
-org:targetcompany password OR secret OR api_key OR token
-
-# Manual dorks
-"target.com" API_KEY
-"target.com" password filetype:env
-"@target.com" password
-
-# Shodan for exposed services
-org:"Target Company" port:22,3306,5432,6379,27017,9200
-
-# Pastebin / ghostbin
-site:pastebin.com target.com
-
-# Historical commits
-truffleHog --entropy=True https://github.com/target/repo
-gitleaks detect --source /path/to/repo
-```
-
-## ASN / IP Range Discovery
-
-```bash
-# Find ASN
-whois -h whois.radb.net -- '-i origin AS12345' | grep route:
-amass intel -org "Target Corp"
-
-# IP range from ASN
-bgpview.io API or:
-whois -h whois.arin.net "n + Target Corp"
-
-# Reverse IP lookup (find more domains on same IP)
-shodan host IP
-```
-
-## Google Dorks for Bug Bounty
-
-```
-site:target.com filetype:pdf  # PDFs (may contain internal info)
-site:target.com inurl:admin
-site:target.com inurl:login
-site:target.com inurl:api
-site:target.com ext:env OR ext:bak OR ext:sql OR ext:log
-site:target.com intext:"internal use only"
-site:target.com intitle:"index of"
-"target.com" inurl:"/wp-content/uploads/"
-"api.target.com" OR "dev.target.com" OR "staging.target.com"
-```
-
-## Recon Automation Stack
-
-```bash
-# Full pipeline example
-subfinder -d target.com | dnsx | httpx -o live.txt
-cat live.txt | katana -jc | grep "\.js$" | subjs | secretfinder
-cat live.txt | gau | qsreplace "FUZZ" | ffuf -u FUZZ -w payloads.txt
-```
-
-## Pro Tips
-
-1. Run recon in stages: passive → active → deep-dive on interesting assets
-2. Focus on dev/staging/internal subdomains — less hardened, more bugs
-3. Check `robots.txt`, `sitemap.xml`, `.well-known/` on every discovered host
-4. Wayback Machine URLs reveal old endpoints that still work
-5. JS files are goldmines — new endpoints, API keys, internal comments
-6. Alert on new subdomains — fresh deployments often have bugs before security review
-7. Check ASN for entire IP ranges — find forgotten test servers and admin panels
-8. `.git` exposure + source code = automatic high severity bug
-9. CloudFront/Akamai custom error pages often leak internal domain names
-
-## Summary
-
-Recon multiplies bug-finding efficiency. Subdomain enumeration finds forgotten assets, JS analysis reveals undocumented APIs, and cloud bucket scanning surfaces data exposures. Build an automated pipeline and run it continuously — the best bugs are found on newly-deployed assets.

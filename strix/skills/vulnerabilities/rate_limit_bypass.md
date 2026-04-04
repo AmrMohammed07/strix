@@ -1,7 +1,35 @@
 # Rate Limit Bypass Techniques
 
+## Real Impact Gate — Answer Before Reporting
+
+**IMPORTANT: Rate limit absence is NOT a standalone high-severity finding by default.** The severity depends entirely on what the unlimited requests enable.
+
+Before reporting any rate limit finding, answer:
+1. **What does the missing rate limit enable?**
+   - Login brute force WITHOUT account lockout: High (credential brute force is viable)
+   - OTP brute force without rate limit: High (MFA bypass is viable)
+   - Password reset token brute force: High (account takeover chain)
+   - API endpoint without rate limit that returns sensitive data per request: Medium
+   - Non-sensitive API endpoint without rate limit: Low/Informational
+   - Email sending endpoint without rate limit (spam): Low/Medium
+
+2. **Is account lockout present as a compensating control?**
+   - If account lockout exists after N failed attempts: rate limit absence is much less severe (Low only)
+   - If NO lockout AND no rate limit: High (brute force is fully viable)
+
+3. **Must demonstrate actual exploitation viability:**
+   - For login: demonstrate sending 1000 password attempts and getting different responses (not all blocked)
+   - For OTP: demonstrate trying multiple OTP values without being blocked
+   - Generic "rate limiting is missing on /api/x" without demonstrated attack viability: Informational only
+
+**Severity Classification:**
+- No rate limit + no lockout on login/OTP/reset → High (brute force viable)
+- No rate limit + account lockout on login → Low/Informational (lockout mitigates brute force risk)
+- No rate limit on non-auth sensitive endpoint → Medium
+- No rate limit on non-sensitive endpoint → Informational only
+
 ## Overview
-Techniques to bypass rate limiting controls on APIs, login endpoints, OTP validation, and other protected resources.
+Techniques to bypass rate limiting controls on APIs, login endpoints, OTP validation, and other protected resources. Only report rate limit findings where the bypass enables a meaningful attack.
 
 ## IP Rotation Headers
 ```

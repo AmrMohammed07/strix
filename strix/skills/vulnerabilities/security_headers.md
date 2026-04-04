@@ -5,6 +5,26 @@ description: Security header misconfigurations and missing headers that enable X
 
 # Security Headers Misconfigurations
 
+## Severity Classification — Real Impact Gate
+
+**CRITICAL RULE: Missing security headers are NEVER Critical or High severity on their own. They are Low or Informational unless combined with an active exploitable vulnerability.**
+
+Before reporting any security header finding, determine the actual severity:
+
+| Finding | Severity | Condition |
+|---------|----------|-----------|
+| Missing X-Frame-Options + confirmed clickjacking PoC | Medium | Must demonstrate actual clickjacking |
+| Missing X-Frame-Options only | Informational/Low | No active exploit |
+| Missing CSP + active XSS confirmed | Report as XSS (add CSP as fix) | CSP absence is part of XSS, not separate |
+| Missing CSP only, no XSS | Informational | No active exploit enabled |
+| Missing HSTS on HTTPS site | Low | Informational in most cases |
+| Missing X-Content-Type-Options + MIME sniffing exploited | Low | Must show active exploitation |
+| Missing security headers on non-sensitive page | Informational | Not reportable as vulnerability |
+
+**NEVER report standalone "missing headers" as High or Critical.**
+**NEVER report a separate "Missing CSP" finding if you already reported XSS — the CSP recommendation goes in the XSS fix section.**
+**DO report clickjacking when you have a working PoC demonstrating actual user-interaction theft.**
+
 Missing or misconfigured HTTP security headers are among the most common web vulnerabilities. While individually low-severity, they enable or amplify attacks: missing CSP enables XSS persistence, missing HSTS enables SSL stripping, and misconfigured CORS allows cross-origin data theft.
 
 ## Headers Reference

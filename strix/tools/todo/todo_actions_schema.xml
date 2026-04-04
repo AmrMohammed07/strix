@@ -3,17 +3,34 @@
   The todo tool is available for organizing complex tasks when needed. Each subagent has their own
   separate todo list - your todos are private to you and do not interfere with other agents' todos.
 
-  WHEN TO USE TODOS:
-  - Planning complex multi-step operations
-  - Tracking multiple parallel workstreams
-  - When you need to remember tasks to return to later
-  - Organizing large-scope assessments with many components
+  WHEN TO USE TODOS (STRONGLY RECOMMENDED FOR SECURITY ASSESSMENTS):
+  - Tracking endpoint coverage: create todos for each endpoint group to ensure 100% coverage
+  - Planning recursive deepening: create todos for Pass 1, Pass 2, Pass 3, Pass 4 milestones
+  - Tracking vulnerability validation chains: one todo per finding (discovery → validation → reporting)
+  - Organizing large multi-phase assessments with many parallel workstreams
+  - Tracking which endpoints are pending, in-progress, tested, confirmed-vuln
+
+  SECURITY ASSESSMENT TODO TEMPLATES:
+  Use these todo structures for comprehensive scans:
+  - "Phase 0 Recon: technology stack, JS analysis, endpoint discovery, API docs" — priority: critical
+  - "Phase 1 Pre-Auth: login bypass, rate limits, password reset, enumeration" — priority: high
+  - "Phase 2 Setup: User A account, User B account, session capture" — priority: high
+  - "Phase 3 UI Exploration: all pages, all forms, all state changes, admin panel" — priority: critical
+  - "Phase 4 IDOR Testing: all endpoints × User A resources × User B session" — priority: critical
+  - "Phase 4 SQLi Testing: all parameters × all injectable fields" — priority: high
+  - "Phase 4 XSS Testing: all inputs × all 6 contexts × browser execution" — priority: high
+  - "Phase 4 SSRF Testing: all URL parameters × all metadata targets" — priority: high
+  - "Phase 5 Validation: validate all potential findings before reporting" — priority: critical
+  - "Pass 2 Bypass Techniques: WAF bypass, encoding, method override" — priority: high
+  - "Pass 3 Expert Techniques: smuggling, cache poisoning, prototype pollution" — priority: normal
+  - "Pass 4 Final Sweep: 100% checklist audit, verify all reports have raw HTTP" — priority: critical
 
   WHEN NOT NEEDED:
-  - Simple, straightforward tasks
-  - Linear workflows where progress is obvious
-  - Short tasks that can be completed quickly
+  - Simple, single-endpoint tests with obvious linear workflow
+  - Short tasks that complete in a single tool call
 
+  ENFORCEMENT: For scans with more than 20 endpoints, you MUST use todos to track coverage.
+  ENFORCEMENT: Create a todo for EACH recursive pass to ensure all 4 passes are tracked.
   If you do use todos, batch operations together to minimize tool calls.
   </important>
 
