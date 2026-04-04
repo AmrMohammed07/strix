@@ -6,6 +6,12 @@ import threading
 from pathlib import Path
 from typing import Any, cast
 
+try:
+    import uvloop as _uvloop  # type: ignore[import-untyped]
+    _LOOP_POLICY: asyncio.AbstractEventLoopPolicy = _uvloop.EventLoopPolicy()
+except ImportError:
+    _LOOP_POLICY = asyncio.DefaultEventLoopPolicy()
+
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
 
@@ -18,72 +24,60 @@ MAX_CONSOLE_LOGS_COUNT = 200
 MAX_JS_RESULT_LENGTH = 5_000
 
 
-class _BrowserState:
-    """Singleton state for the shared browser instance."""
+_CHROMIUM_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-web-security",
+    # Performance: prevent background throttling that causes jank
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    # Reduce per-navigation overhead
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-extensions",
+    "--disable-hang-monitor",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-sync",
+    "--disable-translate",
+    "--metrics-recording-only",
+    "--safebrowsing-disable-auto-update",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--mute-audio",
+    # Reduce IPC overhead between browser and renderer
+    "--disable-features=IsolateOrigins,site-per-process,TranslateUI",
+]
 
-    lock = threading.Lock()
-    event_loop: asyncio.AbstractEventLoop | None = None
-    event_loop_thread: threading.Thread | None = None
-    playwright: Playwright | None = None
-    browser: Browser | None = None
 
+def _make_event_loop() -> asyncio.AbstractEventLoop:
+    """Create and start a new asyncio event loop in a daemon thread. Returns the loop.
 
-_state = _BrowserState()
-
-
-def _ensure_event_loop() -> None:
-    if _state.event_loop is not None:
-        return
+    Uses uvloop when available for significantly lower I/O latency.
+    """
+    loop_holder: list[asyncio.AbstractEventLoop] = []
+    ready = threading.Event()
 
     def run_loop() -> None:
-        _state.event_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_state.event_loop)
-        _state.event_loop.run_forever()
+        asyncio.set_event_loop_policy(_LOOP_POLICY)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop_holder.append(loop)
+        ready.set()
+        loop.run_forever()
 
-    _state.event_loop_thread = threading.Thread(target=run_loop, daemon=True)
-    _state.event_loop_thread.start()
-
-    while _state.event_loop is None:
-        threading.Event().wait(0.01)
-
-
-async def _create_browser() -> Browser:
-    if _state.browser is not None and _state.browser.is_connected():
-        return _state.browser
-
-    if _state.browser is not None:
-        with contextlib.suppress(Exception):
-            await _state.browser.close()
-        _state.browser = None
-    if _state.playwright is not None:
-        with contextlib.suppress(Exception):
-            await _state.playwright.stop()
-        _state.playwright = None
-
-    _state.playwright = await async_playwright().start()
-    _state.browser = await _state.playwright.chromium.launch(
-        headless=True,
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-web-security",
-        ],
-    )
-    return _state.browser
+    t = threading.Thread(target=run_loop, daemon=True)
+    t.start()
+    ready.wait()
+    return loop_holder[0]
 
 
-def _get_browser() -> tuple[asyncio.AbstractEventLoop, Browser]:
-    with _state.lock:
-        _ensure_event_loop()
-        assert _state.event_loop is not None
-
-        if _state.browser is None or not _state.browser.is_connected():
-            future = asyncio.run_coroutine_threadsafe(_create_browser(), _state.event_loop)
-            future.result(timeout=30)
-
-        assert _state.browser is not None
-        return _state.event_loop, _state.browser
+async def _launch_browser(loop: asyncio.AbstractEventLoop) -> tuple[Playwright, Browser]:
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(headless=True, args=_CHROMIUM_ARGS)
+    return pw, browser
 
 
 class BrowserInstance:
@@ -91,7 +85,10 @@ class BrowserInstance:
         self.is_running = True
         self._execution_lock = threading.Lock()
 
-        self._loop: asyncio.AbstractEventLoop | None = None
+        # Each BrowserInstance owns its own event loop thread so multiple
+        # agents can run browser I/O in parallel without a shared bottleneck.
+        self._loop: asyncio.AbstractEventLoop = _make_event_loop()
+        self._playwright: Playwright | None = None
         self._browser: Browser | None = None
 
         self.context: BrowserContext | None = None
@@ -102,11 +99,11 @@ class BrowserInstance:
         self.console_logs: dict[str, list[dict[str, Any]]] = {}
 
     def _run_async(self, coro: Any) -> dict[str, Any]:
-        if not self._loop or not self.is_running:
+        if not self.is_running:
             raise RuntimeError("Browser instance is not running")
 
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return cast("dict[str, Any]", future.result(timeout=30))  # 30 second timeout
+        return cast("dict[str, Any]", future.result(timeout=60))
 
     async def _setup_console_logging(self, page: Page, tab_id: str) -> None:
         self.console_logs[tab_id] = []
@@ -163,9 +160,14 @@ class BrowserInstance:
 
         page = self.pages[tab_id]
 
-        await asyncio.sleep(2)
+        # Wait for network to settle (up to 1.5s) instead of a hard 2s sleep.
+        # Falls back gracefully on timeout so slow pages don't block indefinitely.
+        with contextlib.suppress(Exception):
+            await page.wait_for_load_state("networkidle", timeout=1500)
 
-        screenshot_bytes = await page.screenshot(type="png", full_page=False)
+        # JPEG is ~5-10x faster to encode than PNG and produces much smaller
+        # base64 payloads, which reduces both CPU time and LLM token cost.
+        screenshot_bytes = await page.screenshot(type="jpeg", quality=75, full_page=False)
         screenshot_b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
 
         url = page.url
@@ -193,7 +195,11 @@ class BrowserInstance:
             if self.context is not None:
                 raise ValueError("Browser is already launched")
 
-            self._loop, self._browser = _get_browser()
+            pw, browser = asyncio.run_coroutine_threadsafe(
+                _launch_browser(self._loop), self._loop
+            ).result(timeout=30)
+            self._playwright = pw
+            self._browser = browser
             return self._run_async(self._create_context(url))
 
     def goto(self, url: str, tab_id: str | None = None) -> dict[str, Any]:
@@ -555,7 +561,7 @@ class BrowserInstance:
     def close(self) -> None:
         with self._execution_lock:
             self.is_running = False
-            if self._loop and self.context:
+            if self.context:
                 future = asyncio.run_coroutine_threadsafe(self._close_context(), self._loop)
                 with contextlib.suppress(Exception):
                     future.result(timeout=5)
@@ -564,6 +570,22 @@ class BrowserInstance:
             self.console_logs.clear()
             self.current_page_id = None
             self.context = None
+
+            # Tear down browser and playwright on this instance's loop
+            async def _shutdown() -> None:
+                if self._browser is not None:
+                    with contextlib.suppress(Exception):
+                        await self._browser.close()
+                if self._playwright is not None:
+                    with contextlib.suppress(Exception):
+                        await self._playwright.stop()
+
+            with contextlib.suppress(Exception):
+                asyncio.run_coroutine_threadsafe(_shutdown(), self._loop).result(timeout=5)
+
+            # Stop the private event loop to free the OS thread
+            with contextlib.suppress(Exception):
+                self._loop.call_soon_threadsafe(self._loop.stop)
 
     async def _close_context(self) -> None:
         try:
@@ -578,4 +600,5 @@ class BrowserInstance:
             and self.context is not None
             and self._browser is not None
             and self._browser.is_connected()
+            and self._loop.is_running()
         )
