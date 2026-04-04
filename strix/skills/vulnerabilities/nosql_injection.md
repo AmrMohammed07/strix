@@ -7,6 +7,66 @@ description: NoSQL injection testing covering MongoDB operator injection, authen
 
 NoSQL injection exploits the mismatch between how applications pass user input to database queries and how the database engine interprets that input. Unlike SQL injection, NoSQL injection frequently involves operator injection (e.g., MongoDB's `$gt`, `$regex`, `$where`) or structure injection (embedding JSON sub-documents). The attack surface is broad: MongoDB is the dominant target, but Redis, Elasticsearch, DynamoDB, Cassandra, and CouchDB each have distinct injection surfaces.
 
+---
+
+## Real Impact Gate — MANDATORY Before Reporting
+
+Before reporting ANY NoSQL injection finding, you MUST answer ALL of the following:
+
+### FORBIDDEN — These are NOT proof of NoSQL injection:
+
+**HTTP 500 from type mismatch is NOT injection:**
+- Sending `{"field": {"$ne": null}}` where the application expects a string produces a 500 because the framework/ODM receives an object instead of a string and throws a type validation error
+- This is equivalent to sending `{"age": "not_a_number"}` — the server errors, but that is input validation failure, not operator injection
+- `500 Internal Server Error` + `{"message": "There was an unknown application error"}` = type mismatch, NOT confirmed injection
+- Mongoose `strict` mode, Joi validation, or any typed schema will produce 500 on object-in-string-field WITHOUT ever touching MongoDB
+
+**WAF differential (403 string vs 500 object) is NOT injection:**
+- String `{"$ne": null}` gets WAF-blocked (403) = WAF works correctly on strings
+- Object `{"$ne": null}` gets 500 = application rejects malformed input
+- This differential proves WAF bypass for detection, NOT that MongoDB processed the operator
+- Do NOT report this as "NoSQL injection confirmed via WAF bypass"
+
+### REQUIRED — One of these MUST be demonstrated:
+
+1. **Authentication bypass**: Send operator payload to login endpoint → you receive a valid session token / are logged in as a real user → **HIGH/CRITICAL**
+
+2. **Boolean differential on sensitive endpoint**: 
+   ```
+   {"field": {"$gt": ""}}  → HTTP 200 with data
+   {"field": {"$gt": "zzzzz"}}  → HTTP 200 with NO data (empty array/null)
+   ```
+   Different data responses based on predicate truth = confirmed operator injection → **HIGH**
+
+3. **Blind data extraction via $regex**:
+   ```
+   {"email": "admin@target.com", "token": {"$regex": "^a"}} → 200 (token starts with 'a')
+   {"email": "admin@target.com", "token": {"$regex": "^b"}} → 401 (token does not start with 'b')
+   ```
+   Extract actual secret character by character → **CRITICAL**
+
+4. **Timing via $where** (MongoDB < 4.4):
+   ```
+   {"$where": "function(){sleep(3000); return true}"} → response takes 3+ seconds
+   {"$where": "function(){return true}"} → response is instant
+   ```
+   Confirmed sleep differential = server-side JS execution → **HIGH**
+
+### Severity Classification
+
+| Evidence | Severity |
+|---|---|
+| Authentication bypass demonstrated | Critical |
+| Actual secret/token extracted via $regex | Critical |
+| Boolean differential + sensitive data widened | High |
+| $where timing confirmed | High |
+| Error-based indication only (500 errors, no exploit) | Low/Info |
+| WAF bypass differential (403 string vs 500 object) alone | Informational |
+
+**RULE**: HTTP 500 from operator-as-object is at most **Informational** ("application may not properly reject non-string input") unless you can escalate it to a boolean differential or actual bypass. Do NOT report it as High or Critical.
+
+---
+
 ## Attack Surface
 
 **MongoDB**
@@ -195,12 +255,19 @@ SELECT * FROM Users WHERE username = 'x' OR '1'='1
 4. Provide before/after: normal request returns 401, injected request returns 200
 5. For `$where`: show timing differential with/without `sleep()`
 
-## False Positives
+## False Positives — DISCARD These Immediately
 
+**DO NOT REPORT as NoSQL injection:**
+
+- **HTTP 500 on operator-as-object with no further exploitation** — this is a type mismatch/validation error, not confirmed injection. The framework sees `{$ne: null}` where it expects a string and throws an unhandled exception. The operator NEVER reaches MongoDB.
+- **WAF 403 (string version) vs App 500 (object version)** — proves WAF only inspects string-encoded content, does NOT prove injection reached the database
+- **Consistent 500 errors across all operator types** — if every single operator (`$ne`, `$gt`, `$regex`, `$where`, `$exists`, etc.) produces the same 500 response, this is uniform type validation rejection, not injection
 - Framework-level query builder that casts input to string before constructing the query (Mongoose `strict` mode on)
 - Input sanitization stripping operator keys before they reach the driver
-- Endpoints that accept JSON but cast the `password` field to string — operator object becomes `[object Object]`
+- Endpoints that accept JSON but cast the field to string — operator object becomes `[object Object]`
 - Response differences caused by validation errors, not actual operator execution
+
+**Escalation path**: If you observe 500 errors, attempt to find a LOGIN or SEARCH endpoint where you can demonstrate a boolean differential. If no such endpoint exists and you cannot bypass auth or extract data, this is at most **Informational**.
 
 ## Impact
 

@@ -9,11 +9,20 @@ XSS allows attackers to execute malicious JavaScript in victims' browsers, leadi
 
 **CRITICAL RULE: A finding is XSS ONLY if it executes in a browser. HTML reflection without execution is NOT XSS. Always confirm browser execution before reporting.**
 
+**CRITICAL RULE: JSON API RESPONSES ARE NEVER XSS.** If the endpoint returns `Content-Type: application/json`, the payload stored inside that JSON will NEVER execute as JavaScript — browsers parse JSON as data, not HTML. A payload stored in a JSON field and returned in a JSON response is NOT XSS until you prove it is rendered in an HTML context (text/html page) in a real browser.
+
 ---
 
 ## Real Impact Gate — Answer Before Reporting
 
 Before reporting any XSS finding, explicitly answer ALL of these:
+
+0. **Is the payload rendered in an HTML context (Content-Type: text/html)?**
+   - MANDATORY FIRST CHECK: identify the UI page that renders the stored/reflected value
+   - If you only have evidence of storage in a JSON API response → NOT confirmed XSS
+   - You MUST navigate (with Playwright or browser) to the HTML page that displays the stored value and confirm execution there
+   - "The JSON response body contains the payload verbatim" = STORAGE CONFIRMED, XSS NOT CONFIRMED
+   - "The profile page at /users/123 rendered the payload and alert() fired" = XSS CONFIRMED
 
 1. **Did the payload EXECUTE in a browser?** (Not just reflect in source — actually execute)
    - Required proof: alert/console.log capture from headless browser, or screenshot of execution, or screenshot of exfiltrated data
@@ -460,11 +469,22 @@ An authenticated attacker can inject persistent JavaScript into their user profi
 
 ## False Positive Rejection Rules
 
-Mark as FALSE POSITIVE and discard (do NOT report as vulnerability) if:
+Mark as FALSE POSITIVE and discard (do NOT report as vulnerability) if ANY of these apply:
+
+**JSON CONTEXT — MOST COMMON FALSE POSITIVE:**
+- **The only evidence is a JSON API response containing the payload** → NOT XSS. JSON responses (Content-Type: application/json) are never rendered as HTML by browsers. The payload `<img onerror=alert(1)>` stored in `{"first_name": "<img onerror=alert(1)>"}` will never execute. You MUST find the HTML page that renders this value and confirm execution there.
+- The storage endpoint returns JSON and you have NOT navigated to the HTML UI page that renders the stored data → UNCONFIRMED, do not report
+- You assumed "navigate to profile page and it will execute" without actually doing it → NOT confirmed, do not report
+
+**ENCODING / ESCAPING:**
 - Payload reflects in HTML but all special characters are HTML-encoded (`&lt;`, `&quot;`, etc.) → NOT XSS
 - Payload reflects in HTML but JavaScript cannot be triggered from that context → NOT exploitable XSS
+
+**SCOPE / REACH:**
 - Self-XSS: payload only executes when the attacker submits it in their own browser, with no path to affect other users → Informational only
+- XSS in an admin-only panel where the admin themselves is the only viewer → self-XSS, Informational
+
+**DEFENSES IN PLACE:**
 - CSP with strict nonces/hashes and no unsafe-inline or wildcard domains → XSS not exploitable without CSP bypass
 - Trusted Types enforced on all sinks → XSS not exploitable without Trusted Types bypass
 - Alert fires only in developer-mode console with no real execution path → NOT a valid XSS
-- XSS in an admin-only panel where the admin themselves is the only viewer → self-XSS, Informational

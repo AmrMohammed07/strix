@@ -421,6 +421,15 @@ INJECTION TESTING (ALL PARAMETERS — MANDATORY):
 XSS TESTING — EXECUTION REQUIRED (ALL CONTEXTS):
 CRITICAL RULE: XSS is ONLY confirmed when the payload EXECUTES in a headless browser.
 A payload reflected in HTML source WITHOUT browser execution = NOT CONFIRMED = DO NOT REPORT.
+
+CRITICAL RULE — JSON API RESPONSES ARE NEVER XSS:
+FORBIDDEN: Reporting XSS based solely on a JSON API response containing the payload.
+JSON responses (Content-Type: application/json) are NEVER rendered as HTML by browsers.
+A payload stored in {"first_name": "<img onerror=alert(1)>"} inside a JSON response = NOT XSS.
+MANDATORY: For stored XSS, you MUST navigate to the HTML page (Content-Type: text/html) that RENDERS the stored value and confirm execution there with Playwright.
+The test is NOT complete until you have: (1) found the HTML UI page that displays the stored field, (2) navigated to it with a headless browser, (3) confirmed alert/dialog/console execution.
+"The JSON response body contains the payload verbatim" = STORAGE CONFIRMED, XSS NOT YET CONFIRMED.
+
 - Reflected XSS: test all URL parameters that appear in the response
 - Stored XSS: test all inputs stored and displayed to other users (messages, comments, profile fields, usernames, filenames)
 - DOM XSS: analyze JavaScript source for sink usage (innerHTML, document.write, eval, setTimeout, etc.), test URL hash/fragment
@@ -428,6 +437,19 @@ A payload reflected in HTML source WITHOUT browser execution = NOT CONFIRMED = D
 - CSP bypass techniques if CSP is present (check for unsafe-inline, unsafe-eval, JSONP CDNs, missing base-uri)
 - XSS via file uploads: SVG with embedded script, HTML file upload, EXIF metadata in images
 - MANDATORY CONFIRMATION: Use headless browser to navigate to the reflected/stored XSS URL and confirm alert/console.log execution
+
+NOSQL INJECTION — EVIDENCE GATE:
+CRITICAL RULE: HTTP 500 from sending an operator object where a string is expected is NOT confirmed injection.
+Sending {"field": {"$ne": null}} to a field that expects a string causes a framework/ODM TYPE MISMATCH error.
+The server throws 500 BEFORE the operator ever reaches MongoDB. This is input validation failure, NOT injection.
+FORBIDDEN: Reporting NoSQL injection based only on HTTP 500 errors from operator-as-object payloads.
+FORBIDDEN: Reporting "WAF bypass confirmed (403 string vs 500 object)" as Critical/High NoSQL injection.
+MANDATORY: To confirm NoSQL injection, you MUST demonstrate ONE of:
+  (1) Authentication bypass — operator payload → login succeeds, you receive a valid session
+  (2) Boolean differential — {"$gt": ""} returns data, {"$gt": "zzzzz"} returns empty — different results based on predicate truth
+  (3) Blind extraction — $regex character enumeration extracts an actual token/password character by character
+  (4) Timing via $where — sleep(3000) payload causes measurable response delay vs control request
+HTTP 500 alone → at most Informational ("application may not validate input types"). NEVER High or Critical.
 
 AUTHENTICATION & SESSION ATTACKS:
 - JWT attacks: none algorithm, RS256→HS256 confusion with public key as HMAC secret, weak JWT secrets (wordlist brute force with jwt_tool), claim manipulation (sub, role, iat, exp)
