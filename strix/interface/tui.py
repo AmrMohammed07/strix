@@ -766,7 +766,8 @@ class StrixTUIApp(App):  # type: ignore[misc]
 
         config: dict[str, Any] = {
             "llm_config": llm_config,
-            "max_iterations": 300,
+            "scan_mode": scan_mode,
+            # max_iterations intentionally omitted — StrixAgent sets it from scan_mode.
         }
 
         if getattr(args, "local_sources", None):

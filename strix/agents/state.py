@@ -29,6 +29,12 @@ class AgentState(BaseModel):
     final_result: dict[str, Any] | None = None
     max_iterations_warning_sent: bool = False
 
+    # Deep Phases system — finish_scan is intercepted per-phase and only
+    # completes on the final phase.  0-indexed: phases 0..max_phases-1.
+    current_phase: int = 0
+    max_phases: int = 4
+    phase_iteration_start: int = 0
+
     messages: list[dict[str, Any]] = Field(default_factory=list)
     context: dict[str, Any] = Field(default_factory=dict)
 
@@ -113,7 +119,7 @@ class AgentState(BaseModel):
     def has_reached_max_iterations(self) -> bool:
         return self.iteration >= self.max_iterations
 
-    def is_approaching_max_iterations(self, threshold: float = 0.85) -> bool:
+    def is_approaching_max_iterations(self, threshold: float = 0.97) -> bool:
         return self.iteration >= int(self.max_iterations * threshold)
 
     def has_waiting_timeout(self) -> bool:

@@ -190,30 +190,56 @@ class BaseAgent(metaclass=AgentMeta):
 
             self.state.increment_iteration()
 
+            # ------------------------------------------------------------------
+            # Coverage heartbeat — every 30 iterations inject a status pulse
+            # showing the agent how far it is and encouraging continued testing.
+            # Only injected for root agents (parent_id is None).
+            # ------------------------------------------------------------------
+            if (
+                self.state.parent_id is None
+                and self.state.iteration > 0
+                and self.state.iteration % 30 == 0
+            ):
+                self._inject_coverage_heartbeat(tracer)
+
+            # ------------------------------------------------------------------
+            # Stagnation detection — if the last 15 tool calls are all the same
+            # tool, the agent is spinning.  Kick it in a new direction.
+            # Only for root agents; only if we have enough history.
+            # ------------------------------------------------------------------
+            if (
+                self.state.parent_id is None
+                and len(self.state.actions_taken) >= 15
+            ):
+                self._check_and_break_stagnation()
+
+            # ------------------------------------------------------------------
+            # Approaching-max warning — pushed to 97% so it fires very late.
+            # Framed as "you still have time" rather than "finish now".
+            # ------------------------------------------------------------------
             if (
                 self.state.is_approaching_max_iterations()
                 and not self.state.max_iterations_warning_sent
             ):
                 self.state.max_iterations_warning_sent = True
                 remaining = self.state.max_iterations - self.state.iteration
+                current_phase = getattr(self.state, "current_phase", 0)
+                max_phases = getattr(self.state, "max_phases", 4)
                 warning_msg = (
-                    f"URGENT: You are approaching the maximum iteration limit. "
-                    f"Current: {self.state.iteration}/{self.state.max_iterations} "
+                    f"NOTICE: You are at iteration {self.state.iteration}/{self.state.max_iterations} "
                     f"({remaining} iterations remaining). "
-                    f"Please prioritize completing your required task(s) and calling "
-                    f"the appropriate finish tool (finish_scan for root agent, "
-                    f"agent_finish for sub-agents) as soon as possible."
+                    f"Current phase: {current_phase + 1}/{max_phases}. "
+                    f"Use remaining iterations to complete all untested endpoints and UI sections. "
+                    f"Only call finish_scan when you have completed Phase {max_phases}/{max_phases} "
+                    f"and have tested everything. Do NOT rush to finish — exhaustive coverage matters."
                 )
                 self.state.add_message("user", warning_msg)
 
             if self.state.iteration == self.state.max_iterations - 3:
                 final_warning_msg = (
-                    "CRITICAL: You have only 3 iterations left! "
-                    "Your next message MUST be the tool call to the appropriate "
-                    "finish tool: finish_scan if you are the root agent, or "
-                    "agent_finish if you are a sub-agent. "
-                    "No other actions should be taken except finishing your work "
-                    "immediately."
+                    "CRITICAL: Only 3 iterations left. "
+                    "Call finish_scan NOW with your complete findings report. "
+                    "Include all vulnerabilities discovered across all phases."
                 )
                 self.state.add_message("user", final_warning_msg)
 
@@ -637,6 +663,83 @@ class BaseAgent(metaclass=AgentMeta):
         if tracer:
             tracer.update_agent_status(self.state.agent_id, "error")
         return True
+
+    def _inject_coverage_heartbeat(self, tracer: Optional["Tracer"]) -> None:
+        """Inject a periodic status pulse so the agent knows its progress.
+
+        Pulls live data from the tracer (vulnerability count, tool execution
+        count) and from phase state so the agent has concrete numbers to act on.
+        """
+        try:
+            vuln_count = 0
+            tool_exec_count = 0
+            if tracer:
+                vuln_count = len(getattr(tracer, "vulnerability_reports", []))
+                tool_exec_count = len(getattr(tracer, "tool_executions", {}))
+
+            current_phase = getattr(self.state, "current_phase", 0)
+            max_phases = getattr(self.state, "max_phases", 4)
+            phase_iter_start = getattr(self.state, "phase_iteration_start", 0)
+            phase_iters_used = self.state.iteration - phase_iter_start
+            remaining = self.state.max_iterations - self.state.iteration
+
+            heartbeat = (
+                f"[SCAN HEARTBEAT — iteration {self.state.iteration}]\n"
+                f"Phase: {current_phase + 1}/{max_phases}\n"
+                f"Iterations in this phase: {phase_iters_used}\n"
+                f"Iterations remaining: {remaining}\n"
+                f"Vulnerabilities reported so far: {vuln_count}\n"
+                f"Total tool executions: {tool_exec_count}\n\n"
+                f"STATUS CHECK — before continuing, answer these mentally:\n"
+                f"• Have you tested EVERY discovered endpoint for auth bypass?\n"
+                f"• Have you tested EVERY form input for injection?\n"
+                f"• Have you opened and tested EVERY UI section/page/modal?\n"
+                f"• Have you tested privilege escalation across all user roles?\n"
+                f"If the answer to ANY of the above is 'no', keep testing. "
+                f"Do NOT call finish_scan until this phase's objectives are complete."
+            )
+            self.state.add_message("user", heartbeat)
+        except Exception:  # noqa: BLE001
+            pass  # heartbeat is non-fatal
+
+    def _check_and_break_stagnation(self) -> None:
+        """Detect if the agent is repeating the same tool and kick it out.
+
+        If the last 15 tool calls are all the same tool type, the agent is
+        spinning.  Inject a redirect prompt to force a change of approach.
+        """
+        try:
+            recent = self.state.actions_taken[-15:]
+            tool_names = []
+            for entry in recent:
+                action = entry.get("action", {})
+                # Tool invocations can be dicts with a 'name' or 'tool' key
+                name = action.get("name") or action.get("tool") or action.get("function", {}).get("name", "")
+                if name:
+                    tool_names.append(name)
+
+            if len(tool_names) < 10:
+                return
+
+            # If 80%+ of recent tools are the same, we're stagnating
+            if tool_names:
+                most_common = max(set(tool_names), key=tool_names.count)
+                ratio = tool_names.count(most_common) / len(tool_names)
+                if ratio >= 0.8:
+                    redirect = (
+                        f"[STAGNATION DETECTED] You have called '{most_common}' "
+                        f"{tool_names.count(most_common)} times in the last {len(tool_names)} "
+                        f"actions. You are stuck in a loop.\n\n"
+                        f"STOP what you are doing and switch to a completely different attack surface:\n"
+                        f"• If you were fuzzing parameters → switch to UI navigation and click new pages\n"
+                        f"• If you were browsing the UI → switch to API endpoint testing\n"
+                        f"• If you were testing one endpoint → move to a different endpoint\n"
+                        f"• If you were running automated tools → try manual testing instead\n\n"
+                        f"Pick a new area you have NOT yet tested and start there immediately."
+                    )
+                    self.state.add_message("user", redirect)
+        except Exception:  # noqa: BLE001
+            pass  # stagnation check is non-fatal
 
     def cancel_current_execution(self) -> None:
         self._force_stop = True

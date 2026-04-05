@@ -195,7 +195,9 @@ async def run_cli(args: Any) -> None:  # noqa: PLR0915
     llm_config = LLMConfig(scan_mode=scan_mode)
     agent_config: dict[str, Any] = {
         "llm_config": llm_config,
-        "max_iterations": 300,
+        "scan_mode": scan_mode,
+        # max_iterations is intentionally NOT set here — StrixAgent picks
+        # the right budget based on scan_mode (300/800/1500 for quick/standard/deep).
     }
 
     if getattr(args, "local_sources", None):
