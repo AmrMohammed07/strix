@@ -7,13 +7,13 @@ from strix.llm.config import LLMConfig
 class StrixAgent(BaseAgent):
     # Default iterations per scan mode.  Deep mode gets a large budget so the
     # phase gate system can run 4 full phases without hitting the iteration cap.
-    max_iterations = 1500
+    max_iterations = 10000
 
     # Map scan-mode names to iteration budgets and phase counts.
     _SCAN_MODE_CONFIGS: dict[str, dict] = {
-        "quick":    {"max_iterations": 300,  "max_phases": 2},
-        "standard": {"max_iterations": 800,  "max_phases": 3},
-        "deep":     {"max_iterations": 1500, "max_phases": 4},
+        "quick":    {"max_iterations": 1000,  "max_phases": 2},
+        "standard": {"max_iterations": 5000,  "max_phases": 3},
+        "deep":     {"max_iterations": 10000, "max_phases": 4},
     }
 
     def __init__(self, config: dict[str, Any]):
