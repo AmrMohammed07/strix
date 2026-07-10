@@ -1,3 +1,5 @@
+> NOTE: this doc describes the pre-reduction 4-round design; the current system no longer enforces this.
+
 # VANGUARD-9 ULTRA — WORLD-CLASS SCAN PROMPTS
 ### Complete Prompt Arsenal for Strix AI Pentesting Agent
 ### All prompts are standalone — copy and paste directly into Strix during a scan session

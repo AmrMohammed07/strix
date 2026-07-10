@@ -1,6 +1,6 @@
 ---
 name: deep
-description: Supreme exhaustive multi-pass security assessment — 8 mandatory phases, 4 recursive passes, UI-driven exploration, mandatory raw HTTP evidence, think-tool-before-every-decision, zero-tolerance false positives, and absolute endpoint coverage enforcement
+description: Exhaustive multi-technique security assessment — advisory 8-phase workflow, UI-driven exploration, mandatory raw HTTP evidence, think-tool-before-every-decision, zero-tolerance false positives, and endpoint coverage enforcement
 ---
 
 # Deep Testing Mode — Maximum Depth, Zero Misses, Zero False Positives
@@ -15,7 +15,7 @@ RULE 1: THINK TOOL IS MANDATORY before every major decision — before reporting
 
 RULE 2: RAW HTTP IS MANDATORY — every potential finding must have the COMPLETE raw HTTP request (all headers + full body) AND the COMPLETE raw HTTP response (status + all headers + full body) captured before any report is submitted.
 
-RULE 3: 4 PASSES MANDATORY — the scan NEVER completes with fewer than 4 recursive passes (Broad Discovery → Advanced Bypass → Expert Techniques → Final Validation).
+RULE 3: DEEPEN WHERE WARRANTED — after the broad discovery pass, apply advanced-bypass, expert, and validation techniques (Broad Discovery → Advanced Bypass → Expert Techniques → Final Validation) wherever a target's surface warrants them. Finish once the surface is mapped and exhausted, not after a fixed number of passes.
 
 RULE 4: UI FIRST — navigate and interact with every UI element before testing the underlying API.
 
@@ -925,7 +925,7 @@ def test_session_invalidation(user_a_cookie, user_a_jwt, user_a_api_key):
 
 ---
 
-## Phase 7: Recursive Deepening — ALL 4 PASSES MANDATORY
+## Phase 7: Deepening Techniques (apply where the surface warrants)
 
 ### Pass 2: Advanced Bypass Techniques
 
@@ -1208,8 +1208,7 @@ User B response to User A endpoint: [User A data appearing in User B's response]
 
 FORBIDDEN to call agent_finish unless ALL are true:
 ```
-[ ] All 8 phases executed
-[ ] All 4 passes completed
+[ ] The attack surface has been mapped and exhausted (no new surface/findings emerging)
 [ ] /workspace/endpoint_checklist.md = 100% coverage
 [ ] Every confirmed finding: 2+ confirmation signals
 [ ] Every report: complete raw HTTP request

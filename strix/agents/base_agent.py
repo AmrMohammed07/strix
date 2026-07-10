@@ -223,15 +223,12 @@ class BaseAgent(metaclass=AgentMeta):
             ):
                 self.state.max_iterations_warning_sent = True
                 remaining = self.state.max_iterations - self.state.iteration
-                current_phase = getattr(self.state, "current_phase", 0)
-                max_phases = getattr(self.state, "max_phases", 4)
                 warning_msg = (
                     f"NOTICE: You are at iteration {self.state.iteration}/{self.state.max_iterations} "
                     f"({remaining} iterations remaining). "
-                    f"Current phase: {current_phase + 1}/{max_phases}. "
-                    f"Use remaining iterations to complete all untested endpoints and UI sections. "
-                    f"Only call finish_scan when you have completed Phase {max_phases}/{max_phases} "
-                    f"and have tested everything. Do NOT rush to finish — exhaustive coverage matters."
+                    f"Use remaining iterations to cover any untested endpoints and UI sections. "
+                    f"Call finish_scan once you have tested everything and no new attack surface "
+                    f"or findings are turning up. Don't rush — coverage matters more than speed."
                 )
                 self.state.add_message("user", warning_msg)
 
@@ -677,16 +674,10 @@ class BaseAgent(metaclass=AgentMeta):
                 vuln_count = len(getattr(tracer, "vulnerability_reports", []))
                 tool_exec_count = len(getattr(tracer, "tool_executions", {}))
 
-            current_phase = getattr(self.state, "current_phase", 0)
-            max_phases = getattr(self.state, "max_phases", 4)
-            phase_iter_start = getattr(self.state, "phase_iteration_start", 0)
-            phase_iters_used = self.state.iteration - phase_iter_start
             remaining = self.state.max_iterations - self.state.iteration
 
             heartbeat = (
                 f"[SCAN HEARTBEAT — iteration {self.state.iteration}]\n"
-                f"Phase: {current_phase + 1}/{max_phases}\n"
-                f"Iterations in this phase: {phase_iters_used}\n"
                 f"Iterations remaining: {remaining}\n"
                 f"Vulnerabilities reported so far: {vuln_count}\n"
                 f"Total tool executions: {tool_exec_count}\n\n"
@@ -696,7 +687,8 @@ class BaseAgent(metaclass=AgentMeta):
                 f"• Have you opened and tested EVERY UI section/page/modal?\n"
                 f"• Have you tested privilege escalation across all user roles?\n"
                 f"If the answer to ANY of the above is 'no', keep testing. "
-                f"Do NOT call finish_scan until this phase's objectives are complete."
+                f"Call finish_scan once coverage is complete and no new surface or "
+                f"findings are turning up."
             )
             self.state.add_message("user", heartbeat)
         except Exception:  # noqa: BLE001

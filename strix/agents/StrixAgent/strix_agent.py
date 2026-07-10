@@ -5,15 +5,17 @@ from strix.llm.config import LLMConfig
 
 
 class StrixAgent(BaseAgent):
-    # Default iterations per scan mode.  Deep mode gets a large budget so the
-    # phase gate system can run 4 full phases without hitting the iteration cap.
-    max_iterations = 10000
+    # Default iteration budget.  Evidence-anchored to upstream's original
+    # ceiling and the project's own first-cut budgets; a scan terminates early
+    # once the attack surface is exhausted, and can resume via checkpoint if it
+    # ever hits the cap — so the budget is a safety net, not a target.
+    max_iterations = 1200
 
-    # Map scan-mode names to iteration budgets and phase counts.
-    _SCAN_MODE_CONFIGS: dict[str, dict] = {
-        "quick":    {"max_iterations": 1000,  "max_phases": 2},
-        "standard": {"max_iterations": 5000,  "max_phases": 3},
-        "deep":     {"max_iterations": 10000, "max_phases": 4},
+    # Map scan-mode names to iteration budgets.
+    _SCAN_MODE_CONFIGS: dict[str, dict[str, int]] = {
+        "quick":    {"max_iterations": 200},
+        "standard": {"max_iterations": 600},
+        "deep":     {"max_iterations": 1200},
     }
 
     def __init__(self, config: dict[str, Any]):
@@ -32,11 +34,6 @@ class StrixAgent(BaseAgent):
             self.max_iterations = mode_cfg["max_iterations"]
 
         super().__init__(config)
-
-        # Configure phase count on the state after BaseAgent sets it up.
-        # Only root agents use phases (sub-agents complete on first finish).
-        if self.state.parent_id is None:
-            self.state.max_phases = mode_cfg["max_phases"]
 
     async def execute_scan(self, scan_config: dict[str, Any]) -> dict[str, Any]:  # noqa: PLR0912
         user_instructions = scan_config.get("user_instructions", "")

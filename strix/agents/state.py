@@ -29,11 +29,8 @@ class AgentState(BaseModel):
     final_result: dict[str, Any] | None = None
     max_iterations_warning_sent: bool = False
 
-    # Deep Phases system — finish_scan is intercepted per-phase and only
-    # completes on the final phase.  0-indexed: phases 0..max_phases-1.
-    current_phase: int = 0
-    max_phases: int = 4
-    phase_iteration_start: int = 0
+    # One-shot guard: the coverage checkpoint (finish_scan) fires at most once.
+    coverage_checkpoint_done: bool = False
 
     messages: list[dict[str, Any]] = Field(default_factory=list)
     context: dict[str, Any] = Field(default_factory=dict)

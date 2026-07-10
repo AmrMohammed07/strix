@@ -1,11 +1,11 @@
 ---
 name: standard
-description: Structured full-coverage security assessment — 8 mandatory phases, think-tool-before-every-decision, UI-driven exploration, multi-user cross-session IDOR validation, mandatory raw HTTP evidence, anti-false-positive enforcement, and two-pass recursive deepening
+description: Structured full-coverage security assessment — advisory 8-phase workflow, think-tool-before-every-decision, UI-driven exploration, multi-user cross-session IDOR validation, mandatory raw HTTP evidence, and anti-false-positive enforcement
 ---
 
 # Standard Testing Mode — Systematic, Rigorous, Complete, Evidence-Driven
 
-Standard mode provides full attack surface coverage with rigorous validation. It is the baseline for professional penetration testing engagements. Every endpoint tested. Every finding proven end-to-end. Every report contains complete raw HTTP evidence. Two passes minimum — no exceptions.
+Standard mode provides full attack surface coverage with rigorous validation. It is the baseline for professional penetration testing engagements. Every endpoint tested. Every finding proven end-to-end. Every report contains complete raw HTTP evidence. Deepen wherever the surface warrants.
 
 ---
 
@@ -15,7 +15,7 @@ STANDARD 1: THINK TOOL MANDATORY — use it before reporting any vulnerability, 
 
 STANDARD 2: RAW HTTP MANDATORY — every vulnerability report MUST include the COMPLETE raw HTTP request (all headers + full body) AND the COMPLETE raw HTTP response (status + all headers + full body up to 2000 chars).
 
-STANDARD 3: TWO-PASS MINIMUM — after Pass 1 completes, spawn Pass 2 agents for all endpoints with anomalies or hints of weakness.
+STANDARD 3: DEEPEN WHERE WARRANTED — after the first pass, spawn follow-up agents for endpoints with anomalies or hints of weakness; finish once the surface is exhausted, not after a fixed number of passes.
 
 STANDARD 4: UI FIRST — navigate the application as a real user before testing the API.
 
@@ -760,8 +760,7 @@ Missing the raw HTTP request or response = INCOMPLETE REPORT = DO NOT SUBMIT.
 
 Before calling agent_finish, use think tool to verify ALL:
 ```
-[ ] All 8 phases completed
-[ ] Both Pass 1 and Pass 2 completed
+[ ] The attack surface has been mapped and exhausted (no new surface/findings emerging)
 [ ] /workspace/endpoint_checklist.md updated for all tested endpoints
 [ ] Every confirmed finding: 2+ independent signals
 [ ] Every report: complete raw HTTP request AND response
