@@ -44,7 +44,7 @@ In quick mode, test in strict priority order. Move to next priority after each i
 **P1: Broken Access Control (IDOR + Privilege Escalation)** — highest ROI
 **P2: Authentication Bypass (SQLi in login, JWT attacks, OAuth)**
 **P3: Remote Code Execution (file upload, SSTI, command injection, deserialization)**
-**P4: SQL Injection (all parameters)**
+**P4: SQL Injection (DB-backed params with signal only — id/search/filter/sort/where or error/reflection indicators; skip if the stack is not SQL-backed)**
 **P5: SSRF (all URL-accepting parameters)**
 **P6: XSS (stored first, then reflected)**
 **P7: CORS (sensitive authenticated endpoints ONLY)**
@@ -284,10 +284,12 @@ for engine, payload in ssti_payloads.items():
 
 ## Phase 5: P4 — SQL Injection
 
+First confirm the stack is SQL-backed and reduce the request list to params showing signal (DB-typical names, or error/reflection). Do NOT sqlmap every captured request blindly.
+
 ```bash
-# Quick automated scan
+# Quick automated scan (--smart runs heavy tests only on params with heuristic signal)
 sqlmap -l /workspace/proxy_requests.txt \
-  --batch --level=3 --risk=2 \
+  --batch --smart --level=3 --risk=2 \
   --technique=BEUST \
   --dbms=mysql,postgresql,mssql \
   --output-dir=/workspace/sqlmap_quick/

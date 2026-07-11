@@ -526,10 +526,21 @@ for resource_id, resource_url in user_a_resources.items():
 
 ## Phase 5: Systematic Deep Vulnerability Testing
 
-### SQL Injection — Every Parameter, Every Technique
+### SQL Injection — Signal-Gated, Then Deep
+Do NOT run max-intensity sqlmap over every captured request — that is the costliest
+injection anti-pattern (token/time cost, false positives, testing non-SQL stacks). Stage it:
 ```bash
-# Automated scan on all captured proxy requests
+# Stage 1 — cheap triage (only if the stack is SQL-backed). --smart runs heavy tests
+# ONLY on params with heuristic signal, so irrelevant params are skipped fast:
 sqlmap -l /workspace/proxy_requests.txt \
+  --batch --smart \
+  --level=1 --risk=1 \
+  --threads=10 \
+  --output-dir=/workspace/sqlmap_triage/
+
+# Stage 2 — escalate to FULL intensity ONLY on params Stage 1 flagged, or that show
+# error/timing/reflection signal:
+sqlmap -u "<flagged-url-with-param>" \
   --batch \
   --level=5 \
   --risk=3 \

@@ -429,10 +429,11 @@ for endpoint in admin_endpoints:
 ## Phase 5: Systematic Vulnerability Testing
 
 ### SQL Injection
+First confirm the stack is SQL-backed and reduce the request list to params showing signal (DB-typical names, or error/reflection). Do NOT sqlmap every captured request blindly.
 ```bash
-# Automated scan
+# Automated scan (--smart runs heavy tests only on params with heuristic signal)
 sqlmap -l /workspace/proxy_requests.txt \
-  --batch --level=3 --risk=2 \
+  --batch --smart --level=3 --risk=2 \
   --tamper=space2comment,between \
   --technique=BEUST \
   --output-dir=/workspace/sqlmap_results/
