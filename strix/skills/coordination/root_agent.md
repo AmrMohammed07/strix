@@ -305,6 +305,27 @@ Report back with: total pages visited, total API endpoints discovered, total for
 
 ---
 
+## KEYWORD → SKILL ROUTING (deterministic — spawn on match, don't wait to "notice")
+
+When a parameter name, endpoint path, or observed indicator matches a row below,
+spawn a testing agent with the mapped skill(s) as part of Phase 4 — deterministically,
+not only when you happen to notice the class. The methodology already lives in each
+skill; this table only makes the routing explicit so obvious surfaces are never skipped.
+
+| Signal (param name / path / indicator) | Load skill(s) |
+|---|---|
+| URL/host-like param: `url`, `redirect`, `next`, `dest`, `target`, `path`, `host`, `callback`, `return`, `feed`, `uri` | `ssrf`, `path_traversal_lfi_rfi`, `open_redirect` — test ALL three (one input, three sinks) |
+| `template`, `view`, `layout`, `preview`, `page`, or `{{ }}`/`${ }` reflected in output | `ssti` |
+| Endpoint path contains `/admin`, `/manage`, `/internal`, `/console`, or any privileged function | `broken_function_level_authorization` |
+| Shell-like param: `cmd`, `exec`, `command`, `run`, `ping`, `system`, `query` | `command_injection`, `rce` |
+| Object-reference param: `id`, `user_id`, `account`, `order`, `doc`, `file_id` | `idor` |
+| DB-backed param showing signal (`q`, `search`, `filter`, `sort`, `where`) — only where a stack is actually SQL-backed | `sql_injection` |
+| File/upload field, `filename`, multipart file part | `insecure_file_uploads` |
+| `xml`/SOAP body or `Content-Type: *xml*` | `xxe` |
+
+This is a floor, not a ceiling: still spawn skills the target's FEATURES imply even when
+no keyword matches. A single keyword may fan out to several skills (URL params → 3).
+
 ## PHASE 4: SPAWN VULNERABILITY TESTING AGENTS — ALL IN PARALLEL
 
 After Phase 3 completes and authenticated_endpoints.md is ready, spawn all vulnerability testing agents in parallel.

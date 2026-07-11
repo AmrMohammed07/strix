@@ -27,6 +27,8 @@ STANDARD 7: XSS REQUIRES BROWSER EXECUTION — a payload that reflects in HTML s
 
 STANDARD 8: IDOR REQUIRES ACTUAL DATA — "200 OK from User B" is NOT IDOR. User B's response body MUST contain User A's actual private data fields.
 
+STANDARD 9: VERIFY RESPONSE ORIGIN — before treating any response as evidence, confirm it actually came from the host/subdomain you intended to test. Multi-host targets (e.g. `api.example.com` vs `example.com`) can silently misroute, and a proxy/CDN can serve a stale cached response; check that the actual request URL + `Host` header match the intended target before drawing any conclusion.
+
 ---
 
 ## Phase 0: Recon & Documentation — MANDATORY FIRST

@@ -23,6 +23,8 @@ RULE 5: REAL EXPLOITATION ONLY — no theoretical findings. No scanner-only find
 
 RULE 6: ENDPOINT CHECKLIST = 100% — the scan CANNOT complete unless /workspace/endpoint_checklist.md shows 100% coverage.
 
+RULE 7: VERIFY RESPONSE ORIGIN — before treating any response as evidence, confirm it actually came from the host/subdomain you intended to test. Multi-host targets (e.g. `api.example.com` vs `example.com`) can silently misroute, and a proxy/CDN can serve a stale cached response; check that the actual request URL + `Host` header match the intended target before drawing any conclusion.
+
 ---
 
 ## Phase 0: Exhaustive Intelligence & Recon — MANDATORY FIRST

@@ -33,6 +33,8 @@ RULE 9: RATE LIMIT = HIGH ONLY IF no lockout + brute force demonstrated with 500
 
 RULE 10: EVERY REPORT NEEDS ALL 11 SECTIONS — quick mode does not reduce report requirements.
 
+RULE 11: VERIFY RESPONSE ORIGIN — before treating any response as evidence, confirm it actually came from the host/subdomain you intended to test. Multi-host targets (e.g. `api.example.com` vs `example.com`) can silently misroute, and a proxy/CDN can serve a stale cached response; check that the actual request URL + `Host` header match the intended target before drawing any conclusion.
+
 ---
 
 ## Priority Order — Test in THIS EXACT ORDER
