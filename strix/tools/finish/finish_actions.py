@@ -51,6 +51,110 @@ def _coverage_checkpoint(agent_state: Any) -> dict[str, Any] | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Mechanical coverage gate.  Unlike the one-shot recon checkpoint above, this
+# reads the actual /workspace/endpoint_checklist.md through the EXISTING
+# authenticated sandbox tool-server channel and blocks finish_scan while any
+# entry is still untested/pending.  It re-checks on EVERY finish_scan call and
+# is never latched off, so the model cannot self-attest its way past it.  If the
+# checklist cannot be read (no sandbox, file absent, tool-server error) the gate
+# degrades gracefully and lets the scan proceed rather than hard-blocking a scan
+# that never created a checklist (e.g. quick mode).
+# ---------------------------------------------------------------------------
+
+# endpoint_checklist.md path, relative to /workspace (the read tool prepends it).
+_CHECKLIST_PATH = "endpoint_checklist.md"
+# Cap the number of pending entries echoed back so the response stays small.
+_MAX_PENDING_LISTED = 10
+
+
+def _run_coro_sync(coro: Any) -> Any:
+    """Run an async coroutine to completion from sync code, even when an event
+    loop is already running in the current thread, using a dedicated thread with
+    its own loop. Returns the result; re-raises the coroutine's exception.
+    """
+    import asyncio
+    import threading
+
+    box: dict[str, Any] = {}
+
+    def _runner() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            box["result"] = loop.run_until_complete(coro)
+        except BaseException as exc:  # noqa: BLE001 - carried to the caller thread and re-raised
+            box["error"] = exc
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
+def _untested_checklist_entries(checklist_text: str) -> list[str]:
+    """Return the untested/pending checklist lines, using the SAME markers the
+    deep-mode Pass 4 audit uses: an unchecked box ``[ ]`` or a ``pending`` /
+    ``in-progress`` status. Checked ``[x]`` / tested / skipped entries are done.
+    """
+    untested: list[str] = []
+    for raw in checklist_text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if "[ ]" in line or "pending" in lowered or "in-progress" in lowered:
+            untested.append(line)
+    return untested
+
+
+def _coverage_gate(agent_state: Any) -> dict[str, Any] | None:
+    """Block finish_scan while endpoint_checklist.md still has untested entries.
+
+    Reads the checklist through the existing authenticated tool-server channel
+    (``execute_tool`` -> sandbox ``str_replace_editor`` view). Returns a blocking
+    response if any entry is untested/pending, or ``None`` to allow completion.
+    Any failure to read (no sandbox, missing file, tool-server error) returns
+    ``None`` so scans that never had a checklist are not hard-blocked.
+    """
+    try:
+        from strix.tools.executor import execute_tool
+
+        result = _run_coro_sync(
+            execute_tool(
+                "str_replace_editor",
+                agent_state,
+                command="view",
+                path=_CHECKLIST_PATH,
+            )
+        )
+    except Exception:  # noqa: BLE001 - cannot verify coverage => degrade, do not block
+        return None
+
+    if not isinstance(result, dict) or result.get("error") or "content" not in result:
+        # Checklist missing or unreadable => nothing to enforce => fall through.
+        return None
+
+    untested = _untested_checklist_entries(str(result["content"]))
+    if not untested:
+        return None
+
+    plural = "y" if len(untested) == 1 else "ies"
+    return {
+        "success": False,
+        "coverage_incomplete": True,
+        "message": (
+            f"Coverage gate: /workspace/endpoint_checklist.md still has {len(untested)} "
+            f"untested/pending entr{plural}. Test — or explicitly mark skipped — every entry "
+            "before finishing. This gate re-checks on every finish_scan call."
+        ),
+        "pending": untested[:_MAX_PENDING_LISTED],
+    }
+
+
 def _validate_root_agent(agent_state: Any) -> dict[str, Any] | None:
     if agent_state and hasattr(agent_state, "parent_id") and agent_state.parent_id is not None:
         return {
@@ -165,9 +269,15 @@ def finish_scan(
     # before any real recon/mapping (iteration below MIN_RECON_ITERATIONS). This
     # preserves the guard against premature termination WITHOUT forcing a fixed
     # number of rounds: the scan completes as soon as the surface is exhausted.
-    checkpoint = _coverage_checkpoint(agent_state)
-    if checkpoint is not None:
-        return checkpoint
+    # Pre-finish gates, in order: the one-shot recon checkpoint (unchanged), then
+    # the mechanical coverage gate that reads endpoint_checklist.md through the
+    # sandbox tool-server and blocks while any entry is untested/pending. The
+    # coverage gate re-checks every call (not one-shot) and degrades gracefully if
+    # the checklist can't be read.
+    for _gate in (_coverage_checkpoint, _coverage_gate):
+        gate_response = _gate(agent_state)
+        if gate_response is not None:
+            return gate_response
 
     # ------------------------------------------------------------------
     # Complete the scan for real.
