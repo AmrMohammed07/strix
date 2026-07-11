@@ -1,3 +1,4 @@
+import re
 import threading
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -189,6 +190,64 @@ def view_agent_graph(agent_state: Any) -> dict[str, Any]:
         }
 
 
+# ---------------------------------------------------------------------------
+# Keyword -> skill routing. Single source of truth for the deterministic
+# auto-augment applied in create_agent below: when a spawned agent's task/name
+# names an obvious surface, the mapped skill(s) are loaded whether or not the
+# model listed them. Mirrors the (now code-enforced) table in
+# coordination/root_agent.md. Scope: the same ~11 skills documented there —
+# intentionally NOT widened here (map-widening is a separate future decision).
+# ---------------------------------------------------------------------------
+_SKILL_ROUTES: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (
+        re.compile(
+            r"\b(?:url|redirect|next|dest|destination|target|host|callback|feed|uri)\b", re.I
+        ),
+        ("ssrf", "path_traversal_lfi_rfi", "open_redirect"),
+    ),
+    (re.compile(r"\b(?:template|view|layout|preview)\b", re.I), ("ssti",)),
+    (
+        re.compile(r"/(?:admin|manage|console|internal)\b", re.I),
+        ("broken_function_level_authorization",),
+    ),
+    (re.compile(r"\b(?:cmd|exec|command|run|ping|system)\b", re.I), ("command_injection", "rce")),
+    (re.compile(r"\b(?:id|user_id|account|order|doc|file_id)\b", re.I), ("idor",)),
+    (re.compile(r"\b(?:search|filter|sort|where)\b", re.I), ("sql_injection",)),
+    (re.compile(r"\b(?:upload|filename)\b", re.I), ("insecure_file_uploads",)),
+    (re.compile(r"\b(?:xml|soap)\b", re.I), ("xxe",)),
+)
+
+_MAX_SKILLS = 5
+
+
+def _route_skills(task: str, name: str, existing: list[str]) -> tuple[list[str], list[str]]:
+    """Deterministic keyword->skill routing for create_agent.
+
+    Scans ``"{name} {task}"`` (case-insensitive, word-boundary) against the
+    routing map and returns ``(added, dropped)``: skills to auto-load that are
+    not already present and that exist in the skill registry, honoring the
+    5-skill cap (matches that do not fit go to ``dropped``). Pure and
+    side-effect-free so it is unit-testable without spawning an agent.
+    """
+    from strix.skills import get_all_skill_names
+
+    haystack = f"{name} {task}"
+    available = get_all_skill_names()
+    added: list[str] = []
+    dropped: list[str] = []
+    for pattern, skills in _SKILL_ROUTES:
+        if not pattern.search(haystack):
+            continue
+        for skill in skills:
+            if skill in existing or skill in added or skill not in available:
+                continue
+            if len(existing) + len(added) < _MAX_SKILLS:
+                added.append(skill)
+            elif skill not in dropped:
+                dropped.append(skill)
+    return added, dropped
+
+
 @register_tool(sandbox_execution=False)
 def create_agent(
     agent_state: Any,
@@ -227,6 +286,12 @@ def create_agent(
                     ),
                     "agent_id": None,
                 }
+
+        # Deterministic keyword->skill auto-augment: load skills the task/name
+        # implies even if the model didn't list them (honors the 5-skill cap).
+        added_skills, dropped_skills = _route_skills(task, name, skill_list)
+        if added_skills:
+            skill_list = skill_list + added_skills
 
         from strix.agents import StrixAgent
         from strix.agents.state import AgentState
@@ -300,10 +365,18 @@ def create_agent(
     except Exception as e:  # noqa: BLE001
         return {"success": False, "error": f"Failed to create agent: {e}", "agent_id": None}
     else:
+        routing_note = ""
+        if dropped_skills:
+            routing_note = (
+                f"Keyword routing matched additional skills that exceeded the 5-skill cap "
+                f"and were NOT loaded: {dropped_skills}. Consider a dedicated agent for them."
+            )
         return {
             "success": True,
             "agent_id": state.agent_id,
             "message": f"Agent '{name}' created and started asynchronously",
+            "auto_added_skills": added_skills,
+            "routing_note": routing_note,
             "agent_info": {
                 "id": state.agent_id,
                 "name": name,

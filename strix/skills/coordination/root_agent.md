@@ -326,6 +326,14 @@ skill; this table only makes the routing explicit so obvious surfaces are never 
 This is a floor, not a ceiling: still spawn skills the target's FEATURES imply even when
 no keyword matches. A single keyword may fan out to several skills (URL params → 3).
 
+> **Now code-enforced for the rows above.** `create_agent` auto-loads these mapped skills
+> whenever a spawned agent's task/name matches the keyword (up to the 5-skill cap), even if
+> you don't list them in `skills=` — so for these ~11 skills the routing is mechanical, not
+> just advisory. (The code matcher uses a slightly tightened keyword set — it omits
+> over-generic tokens like bare `q`/`path`/`page`/`query` to avoid false loads.) Classes NOT
+> in this table (XSS, CORS, CSRF, auth/JWT, business-logic, GraphQL, WebSocket, etc.) are
+> **not** yet routed in code — spawn their skills explicitly.
+
 ## PHASE 4: SPAWN VULNERABILITY TESTING AGENTS — ALL IN PARALLEL
 
 After Phase 3 completes and authenticated_endpoints.md is ready, spawn all vulnerability testing agents in parallel.
