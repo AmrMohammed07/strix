@@ -215,6 +215,31 @@ _SKILL_ROUTES: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
     (re.compile(r"\b(?:search|filter|sort|where)\b", re.I), ("sql_injection",)),
     (re.compile(r"\b(?:upload|filename)\b", re.I), ("insecure_file_uploads",)),
     (re.compile(r"\b(?:xml|soap)\b", re.I), ("xxe",)),
+    # Feature-name signals (phrases, not parameter names): a delegating sub-agent's
+    # task/name naming the reset/recovery or registration/verification UI section.
+    (
+        re.compile(
+            r"\b(?:forgot[\s_-]?password|(?:reset|recover)[\s_-]?password|"
+            r"password[\s_-]?(?:reset|recovery)|account[\s_-]?recovery)\b",
+            re.I,
+        ),
+        ("reset_password",),
+    ),
+    (
+        # NOTE: corrected from the originally-drafted regex, which had two bugs that
+        # made it miss its own target phrases: `register(?:ation)?` cannot match
+        # "registration" (regist-R-ation, not regist-ER-ation), and a trailing \b after
+        # the bare `verif` stem fails on "verification"/"verify email" (stem is followed
+        # by a word char). This version matches the intended phrases and is verified.
+        re.compile(
+            r"\b(?:sign[\s_-]?up|regist(?:er|ration)|"
+            r"(?:e-?mail|account)[\s_-]?verif(?:y|ication)|"
+            r"verif(?:y|ication)[\s_-]?(?:e-?mail|account)|"
+            r"confirm[\s_-]?e-?mail|account[\s_-]?activation)\b",
+            re.I,
+        ),
+        ("registration_email_verification",),
+    ),
 )
 
 _MAX_SKILLS = 5
