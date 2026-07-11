@@ -1,0 +1,57 @@
+<tools>
+  <tool name="hackerone_intel">
+    <description>Consult the local HackerOne intelligence engine — 12,340 disclosed HackerOne reports distilled into ranked hunt plans, per-bug-class playbooks, per-technology and per-feature intel, cross-report bug-chain intelligence, and real report citations.
+
+ROOT AGENT ONLY. Use this as a consult-first step BEFORE proposing a methodology or spawning sub-agents on a target, and to ground hypotheses in disclosed-report priors. Sub-agents cannot use this tool.
+
+Typical flow: start with mode="plan" (pass tech / feature / target) for a ranked, evidence-backed hypothesis list, then drill in with mode="playbook" / "profile" / "feature" for the how-to, and mode="class" / "search" / "show" for the real reports behind it.
+
+READ-ONLY. Returns a dict: {"success": true, "mode": ..., "output": "<plain text / markdown>", "truncated"?: true} on success, or {"success": false, "error": "..."} on failure (including when the KB is not configured on this host — it degrades gracefully and never crashes).
+
+Modes and the params each uses:
+- plan     — needs at least one of tech / feature; target labels the plan header; limit caps hypotheses. Returns ranked hypotheses + chains + suggested order.
+- playbook — query = bug-class slug (e.g. "ssrf"). Hunting playbook for that class.
+- profile  — query = technology slug (e.g. "nextjs", "aws"). Tech intelligence profile.
+- feature  — query = feature slug (e.g. "billing", "rbac"). Feature intelligence profile.
+- chains   — no query. Cross-report bug-chain intelligence.
+- recon    — no query. Recon-value ranking.
+- search   — query = free text; limit. Full-text search across reports.
+- class    — query = bug-class slug; limit. Disclosed reports in that class.
+- show     — report_id = numeric report id. Full writeup + metadata (can be long; raise max_chars to read it all).
+- tech     — query = bug-class slug. Normalized techniques extracted for that class.
+- assets   — query = host or technology term. Reports touching that asset/tech.
+- analysis — query = analysis name (optional; defaults to a cross-report synthesis).
+- classes  — no query. Bug-class distribution across the corpus.
+- programs — limit. Most-disclosed programs.
+
+Output is truncated at max_chars (default 16000) with "truncated": true set; raise max_chars only when you deliberately want a full long result (e.g. a specific "show").
+
+Known limitation: a query that is EXACTLY one of the engine's flag strings (--class, --program, --severity, --limit, --bounty, --kind) is misparsed by the underlying script and returns wrong/empty results. Avoid passing a bare flag string as query.</description>
+    <parameters>
+      <parameter name="mode" type="string" required="true">
+        <description>Which KB subcommand to run: one of plan, playbook, profile, feature, chains, recon, search, class, show, tech, assets, analysis, classes, programs. (The write-path "outcome" subcommand is intentionally not available.)</description>
+      </parameter>
+      <parameter name="query" type="string" required="false">
+        <description>Free-text term or slug, per mode: bug-class slug for playbook/class/tech, technology slug for profile, feature slug for feature, free text for search, host/tech for assets, analysis name for analysis. Leave empty for plan/show/chains/recon/classes/programs.</description>
+      </parameter>
+      <parameter name="report_id" type="integer" required="false">
+        <description>Numeric HackerOne report id. Required for mode="show".</description>
+      </parameter>
+      <parameter name="tech" type="string" required="false">
+        <description>Comma-separated technology slugs/names for mode="plan" (e.g. "nextjs,aws"). At least one of tech or feature is required for plan.</description>
+      </parameter>
+      <parameter name="feature" type="string" required="false">
+        <description>Comma-separated feature slugs for mode="plan" (e.g. "billing,rbac"). At least one of tech or feature is required for plan.</description>
+      </parameter>
+      <parameter name="target" type="string" required="false">
+        <description>Target label used in the plan header, for mode="plan" (e.g. a domain). Optional.</description>
+      </parameter>
+      <parameter name="limit" type="integer" required="false">
+        <description>Result/hypothesis cap for search / class / programs / plan. Default 20.</description>
+      </parameter>
+      <parameter name="max_chars" type="integer" required="false">
+        <description>Max characters of engine output to return before truncation. Default 16000. Raise it when you deliberately want a full, long result.</description>
+      </parameter>
+    </parameters>
+  </tool>
+</tools>
