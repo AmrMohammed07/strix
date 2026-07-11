@@ -253,3 +253,98 @@ Transfer-Encoding: chunked\r\nTransfer-Encoding: x  # TE twice
 ## Summary
 
 HTTP request smuggling is eliminated by enforcing consistent TE/CL interpretation at every hop in the proxy chain, preferring end-to-end HTTP/2, and having back-end servers reject or normalize ambiguous requests. At the proxy level, never forward TE headers that were not present in the original request, and treat conflicting CL + TE as a hard error.
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/http-smuggling)
+
+### CL.0 (server-side) — back-end ignores Content-Length on some endpoints
+Distinct from client-side desync: a back-end that never reads the body on certain routes (GET handlers, static files, or a server that breaks on malformed headers) parses the body as a fresh request on the socket. Corpus case: **Werkzeug Unicode CL.0** — Werkzeug fails to close a request that has Unicode characters in headers; with `Connection: keep-alive` the body is never consumed and is treated as the next HTTP request.
+```
+POST / HTTP/1.1
+Host: victim.com
+Connection: keep-alive
+Content-Length: 34
+
+GET /admin HTTP/1.1
+Host: victim.com
+
+```
+
+### TE.0 — the CL.0 variant using Transfer-Encoding framing
+Like CL.0, but the back-end ignores the `Transfer-Encoding` framing on some endpoints and the trailing bytes become the next request. Test wherever CL.0 works, but send a chunked body instead of a CL body.
+
+### Malformed chunk-line / line-ending tricks (bare-LF, bare-CR, chunk extensions)
+Parser splits caused by non-strict line handling rather than CL/TE disagreement.
+- **Kestrel CVE-2025-55315** (CVSS 9.8): improper handling of malformed chunk extensions / LF-only line endings → auth bypass to `/admin`, response-queue-poisoning session hijack, SSRF to `169.254.169.254`. Fingerprint payload verbatim:
+```
+1\nx\n0\n\n
+```
+- **Node llhttp** "CR-to-Hyphen conversion" and "improper header block termination" — bare-CR / bad terminators get reinterpreted.
+- Bare `\n` as line terminator where one hop requires `\r\n`; chunk-size with leading zeros/whitespace; chunk extension `1;abc\r\n`.
+
+### Connection-state / first-request routing (request tunnelling)
+Once a FE↔BE socket is established, subsequent requests are silently reused regardless of `Host`. If the FE routes/authorizes only on the **first** request of a connection, smuggle a second request with a different `Host`/path to reach other vhosts / internal routes (SSRF-like; chains with Host-header attacks — password-reset poisoning, cache poisoning). Detect with Burp HTTP Request Smuggler → **Connection-state probe**: send two requests with different `Host`/`:authority` on one connection; response 2 coming from host 1 = safe, from host 2 = vulnerable.
+
+### WebSocket smuggling via bad Sec-WebSocket-Version
+Tunnel through the proxy to talk directly to the backend and reach an otherwise-inaccessible internal REST API. Send an `Upgrade` request with an **incorrect `Sec-WebSocket-Version`**; a proxy that fails to validate the version forwards it, and on the backend's `426 Upgrade Required` the proxy may still tunnel — giving direct backend access. (Distinct from WebSocket handshake hijacking.)
+
+### HTTP/2 & HTTP/3 connection-coalescing abuse (browser-side)
+Browsers coalesce H2/H3 requests onto one TLS connection when cert + ALPN + IP match. If the FE only authorizes the first request, every coalesced request inherits that authorization even when `:authority`/`Host` changes:
+```
+1. attacker.com resolves to the same CDN edge IP as target internal host
+2. victim browser already has an open H2 connection to attacker.com
+3. attacker page embeds a hidden request for the internal host
+4. browser reuses the TLS connection, multiplexes the internal request
+5. FE only validated stream 1 → internal host exposed
+```
+**Envoy CVE-2024-2470**: improper `:authority` validation after the first stream → cross-tenant smuggling in shared meshes/CDNs.
+
+### HEAD response content-confusion → XSS (response-smuggling sub-variant)
+A HEAD response carries `Content-Type`/`Content-Length` of a body it never sends; craft the request whose (attacker-controlled) body the victim receives with those headers → reflected content executes as HTML/JS on a page that is not otherwise XSS-vulnerable. If the injected response is cached under the victim's URL, it poisons arbitrary cacheable URLs.
+
+### Memcache / CRLF-to-smuggling injection
+Where an app inserts unsanitised HTTP-derived data into requests to a memcache server, inject new (clear-text protocol) memcache commands to poison cache entries — e.g. return attacker IP/port for other users' sessions, capturing usernames/passwords. CRLF header injection generally escalates to smuggling: an injected `\r\n\r\n` appends a second full request/body.
+
+### Express method-override tunnelling
+`method-override` middleware lets a form POST tunnel verbs the FE/WAF/CSRF logic assumed impossible. Probe to reach hidden PUT/PATCH/DELETE routes, bypass route middleware that only checks GET/POST, or fire state-changing handlers via CSRF:
+```
+X-HTTP-Method-Override: PUT      (or DELETE)
+_method=PUT   (body or query-string override)
+```
+
+### Visible-vs-Hidden (V-H / H-V) parser-discrepancy detection — WAF-safe
+Kettle 2024 discovery technique that finds parser splits without exploiting anything. Send a normal `Host` plus an obfuscated variant (`Host :` / a leading-space `" host"`); if the BE complains but the FE didn't, or vice versa, you've located a parser split. Example: AWS ALB front-end + IIS backend returned different responses to `Host: foo/bar` vs `Host : foo/bar`. Great for WAF-safe discovery because nothing is actually smuggled during detection.
+
+### TE.TE obfuscation specifics that double as WAF bypasses
+Beyond generic TE obfuscation, two corpus-proven items:
+- **`chUnKEd` case-mangling** of the TE value — bypasses signature WAFs while the target still honours it (.NET Kestrel PoC EDB-52492, SAP PoC).
+- **Duplicate `Transfer-Encoding` with a junk second value** — Node **CVE-2020-8287**, verbatim:
+```js
+header: [ 'Host','127.0.0.1','Transfer-Encoding','chunked','Transfer-Encoding','eee' ], body: 'A'
+// express-normalised form: { host:'127.0.0.1', 'transfer-encoding':'chunked, eee' }
+```
+
+### SAP CL-desync fallback (chunked refused → oversized Content-Length + padded body)
+SAP ICM rejects `Transfer-Encoding: chunked` (returns 408), so smuggle via oversized `Content-Length` + empty chunk + embedded GET to an internal path. **CVE-2022-22536 (ICMAD, MPI/memory-pipe desync)**; scanner `Onapsis/onapsis_icmad_scanner`. SAP Content Server verbatim PoC:
+```
+GET /sap/admin/public/default.html HTTP/1.1
+Host: {{target}}
+Content-Length: 82700
+Connection: close
+
+AAAAAAAAAAAAAAAA...          (large padding body to swallow the boundary)
+```
+Internal targets: `/sap/admin/public/default.html`, `/sap/public/bc/ur/Login/...`.
+
+### H2C smuggling nuances
+Additions to the general h2c technique already documented:
+- **Inherently-vulnerable proxies** (forward both `Upgrade` + `Connection`): **HAProxy, Traefik, Nuster**. Sometimes-vulnerable if misconfigured: AWS ALB/CLB, NGINX, Apache, Squid, Varnish, Kong, Envoy, ATS.
+- Key insight: the tunnel connects to the internal endpoint's `/` **regardless of the path** in the upgrade request — any internal path is reachable once the H2C connection is up.
+- Also try the **non-compliant `Upgrade: h2c` without the `HTTP2-Settings` value** — non-conformant backends still upgrade. Tool: **h2csmuggler** (BishopFox / assetnote).
+
+### Real-world case-provenance bank (for impact framing / dedup)
+- **Mass ATO via cookie/token capture** — *Zomato X-Access-Token bulk theft* (H1 Eternal, 557 upvotes), *Slack mass session-cookie ATO* (H1, 864 upvotes), *LINE admin ATO* (`admin-official.line.me`, H1 LY Corp, 563 upvotes). Smuggle a prefix so the next victim's request (with cookies/`X-Access-Token`) is appended to a logged/echoed endpoint.
+- **Apache mod_proxy CVE-2024-40725** (`ProxyPass` + rewrite).
+- **Oracle E-Business Suite CVE-2025-61882** — smuggling chained with SSRF + path-traversal + XSLT → RCE.
+- **IBM QRadar via AJP smuggling** (watchTowr PoC) — poisoned HTTP response queue with a stored redirect → cache poisoning.
+- Detection tooling not already listed: **Smuggler**, and single-packet attack / Turbo Intruder to land the follow-up request before other traffic on the socket; in Burp Repeater disable "Update Content-Length" and normalisation (gadgets abuse newlines/CRs/malformed CLs).

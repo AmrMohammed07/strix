@@ -190,3 +190,65 @@ mutation Promote($id:ID!){
 ## Summary
 
 Authorization must bind the actor to the specific action at the service boundary on every request and message. UI gates, gateways, or prior steps do not substitute for function-level checks.
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/priv-esc)
+
+These cover **web vertical privilege escalation** patterns (authenticated normal user → application admin) not already spelled out in the mass-assignment, BFLA, or account-takeover skills. Host/OS post-exploitation privesc (SUID/sudo/capabilities/kernel, Windows service/DLL/token) is deliberately excluded — that is post-shell OS work, not web-app testing.
+
+### Numeric role-*level* hierarchy tampering (distinct from boolean isAdmin)
+
+Many legacy CMS/portal apps model privilege as an integer tier where **lower = more powerful** (e.g. `1 = super administrator … 5 = member`). Unlike an `isAdmin` boolean, the field looks like innocuous UI state, so it is often client-supplied on profile/update and trusted. Intercept a normal update and lower the tier:
+
+```
+POST /?c=webuser&m=update
+Cookie: PHPSESSID=...
+
+No=3&ID=test&Password=test&Name=test&UserRole=1&Language=en   # UserRole=1 → admin tier
+```
+
+Field names seen in the wild to fuzz specifically: `level=`, `UserRole=`, `U_ACCESS=`, `accesslevel=`, `role_id=`, `rolelevel=`, `role_name=`, `group_id=`, `user_type=admin`. Editor at `level=3` re-submitting with `level=1` = super-admin.
+
+### Registration-time privilege field injection
+
+Some apps enforce a privilege binding on **update** but not on **create** (or vice-versa) — the binder differs per route. If a profile-update rejects your `role`/`accesslevel`, retry the same field on the **registration** request, where a hidden field like `U_ACCESS` or `accesslevel=4` may be blindly persisted at account creation:
+
+```
+POST /register
+username=x&password=...&U_ACCESS=admin&accesslevel=4
+```
+
+Always test both create and update paths independently — a rejected field on one route is frequently honored on the other (route-dependent model binding).
+
+### Password-reset parameter tampering → reset the admin's password
+
+Beyond host-header poisoning and token leakage: some reset endpoints take the *target account* from a **request parameter or cookie** rather than from the authenticated session, so swapping it lets you drive a reset against an arbitrary/admin account:
+
+```
+GET /lua/admin/password_reset.lua?csrf=XXXX&username=admin&old_password=12345&new_password=123456&confirm_new_password=123456 HTTP/1.1
+Cookie: user=admin; session=XXXX
+```
+
+Swap both the `username=` param and any identity cookie (`Cookie: user=admin`). If the server keys the reset off the client-supplied identifier, you set the admin's password → vertical ATO.
+
+### Delegation / role-grant workflow abuse
+
+Apps with a "delegate access" or "grant role" feature may let you name **both** the grantee and the granted role in one request, without checking that you are entitled to hand out that role or act on that delegator:
+
+```
+selFunc=add&delegate=<ATTACKER>&delegateRole=5&delegatorUserId=<ADMIN>
+```
+
+Set `delegateRole` to the highest tier and `delegatorUserId` to a privileged user — the workflow grants your account the elevated role. Treat every "assign role / add member / delegate" action as a privilege-granting sink and confirm it re-checks the actor's own rights.
+
+### JWT `alg=None` / role-claim forgery → admin
+
+Where authorization is derived from a JWT claim, tamper the token rather than the request body: strip the signature with `alg=None`, or flip a role/tier claim (`"role":"admin"`, `"level":1`, `"tenant":"*"`) if the signature is weak/guessable. Forged claim → admin API reachable directly. (Verify signature handling per the improper-authentication methodology before relying on it.)
+
+### Predictable / guessable session token → admin impersonation
+
+If session identifiers are sequential, timestamp-derived, or short (e.g. an app-specific `W2E_SSNID`), an authenticated low-priv user can predict or brute an admin's live session token and impersonate them outright — no reset flow needed. Sample several tokens, check for structure/entropy, and try adjacent/derivable values against admin-only endpoints.
+
+### Confirming web privesc: the before/after 403 diff
+
+Concrete confirmation that turns a "200 OK" into a proven escalation: as the escalated identity, hit an admin-only endpoint that the *same account returned 403/404 on before* the change, and separately re-fetch your own profile to show the `role`/`isAdmin`/`level` field now reflects the injected value. Two independent signals (privileged action now succeeds + persisted privilege field changed) distinguish a real escalation from a silently-ignored parameter.

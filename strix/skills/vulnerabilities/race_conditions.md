@@ -179,3 +179,87 @@ Concurrency bugs enable duplicate state changes, quota bypass, financial abuse, 
 ## Summary
 
 Concurrency safety is a property of every path that mutates state. If any path lacks atomicity, proper isolation, or idempotency, parallel requests will eventually break invariants.
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/race-condition)
+
+Concrete delivery primitives, tooling recipes, and disclosed-report provenance that complement the methodology above. Core research: PortSwigger "Smashing the State Machine" (James Kettle).
+
+### HTTP/2 single-packet attack (the reliable modern primitive)
+Send many complete requests but withhold the final frame of each, then release all withheld frames so they land in one TCP packet → server processes them in the same tick. Removes network jitter entirely.
+```
+1. Send headers + body minus the final byte, without ending the stream.
+2. Pause ~100ms after the initial send.
+3. Disable TCP_NODELAY so Nagle's algorithm batches the final frames.
+4. Ping to warm the connection.
+   -> Withheld frames arrive in one packet (verify in Wireshark).
+```
+Puts ~20–30 requests' first-halves on one connection, then flushes. Does not apply to static files.
+
+### HTTP/1.1 last-byte synchronization (when no HTTP/2)
+Same idea over keep-alive: pre-send 20–30 requests minus their last byte, hold, then flush all last bytes together for simultaneous arrival.
+
+### Turbo Intruder — single-endpoint template
+```python
+def queueRequests(target, wordlists):
+    engine = RequestEngine(endpoint=target.endpoint,
+                           concurrentConnections=1,
+                           engine=Engine.BURP2)   # HTTP/2 single-packet
+    for i in range(30):
+        engine.queue(target.req, gate='race1')    # queue N on ONE gate
+    engine.openGate('race1')                       # release all tails at once
+
+def handleResponse(req, interesting):
+    table.add(req)
+```
+For HTTP/1.1-only targets, swap `Engine.BURP2` for `THREADED`/`CLUSTERBOMB`. Diagnostic: **negative timestamps** in Turbo Intruder mean the server responded before the request finished sending — proof the requests genuinely overlapped.
+
+### Burp Repeater delivery (fastest)
+Select the requests → **"Send group in parallel"** (single-packet under the hood). For a limit-overrun, just add the same request 50× to the group; even 2–3 wins prove it.
+
+### Multi-endpoint race (hidden sub-state)
+Fire a request that pushes the app into a transient hidden state, then flood a *different* endpoint that only works in that state. To tune delay between two sub-states, insert extra padding requests between the two real ones.
+
+### Defeat PHP per-session serialization
+Frameworks that lock the session file per session (PHP) serialize requests and hide the race. Use a **different session token per request** so they aren't serialized.
+
+### Extend the 1,500-byte single-packet limit (IP fragmentation)
+The single-packet attack is capped at ~1,500 B. IP-layer fragment one packet into many and send out of order so reassembly waits for all fragments → up to TCP's 65,535 B window (~10,000 requests in ~166 ms). Tool: `Ry0taK/first-sequence-sync`. Watch concurrent-stream caps: **Apache 100, Nginx 128, Go 250; Node/nghttp2 unlimited.**
+
+### HTTP/3 last-frame synchronization (QUIC)
+No TCP coalescing/Nagle over QUIC, so last-byte sync fails. Coalesce multiple QUIC stream-final (FIN) DATA frames into the **same UDP datagram**. For GET-style requests craft fake DATA frames (or tiny body + Content-Length) and end all streams in one datagram. Library: **H3SpaceX** (manipulates quic-go); `max_streams` caps parallelism.
+
+### WebSocket races
+The default WS Turbo Intruder engine batches messages on one connection (bad for races). Use the **THREADED** engine to spawn multiple WS connections and fire in parallel. Tool: PortSwigger **WebSocket Turbo Intruder** (BApp Store).
+
+### 2FA / OTP verification race + resend quirk
+Concurrent verify requests slip through before the attempt counter / code-consumed flag is written → brute-force or reuse a code. Note the rate-limit quirk seen in the HackerOne 2FA bypass: even after a 401 "rate limited" at 20 attempts, sending the *valid* OTP still returned 200; and **code-resend resets the throttle**, so keep brute-forcing. Rate limits often protect login but not internal account actions.
+
+### TOCTOU on setup / privilege bootstrap
+Race a one-time first-run setup endpoint that checks "is setup done / does an admin exist?" then creates a privileged object — fire many setup requests in the gap. Case: Querybook "How I Created 20 Super-Admins in 1 Second."
+
+### TOCTOU on file / config operations
+- **Upload saved before validation** — file lands on a predictable public path before MIME/content check runs and isn't cleaned up on error → grab it during the window (VaahCMS CVE-2025-61183, path `/storage/media/YYYY/MM/<name>.svg`).
+- **Config-rewrite race** — if the app sanitizes right before running Git, spam the endpoint that writes your malicious config while triggering the Git action to win a race and get your hook executed.
+- **phpinfo() LFI2RCE** — race the multipart upload (temp file exists briefly in `/tmp`) against an LFI that includes it before PHP deletes it; brute-force phpinfo to leak `tmp_name`, send many concurrent requests to widen the flush window.
+
+### Cache-key collision race (framework)
+Simultaneous requests collide on a shared cache/promise key so one request's private response entangles with another. Case: Next.js "Eclipse" CVE-2025-32421 — simultaneous `/_error-0` requests collide on the promise-batcher `cacheKey` → server-side data exposure.
+
+### Single-packet-powered timing attack
+The single-packet attack removes network jitter so pure server-side timing deltas (~5 ms) become measurable — detect hidden params/headers this way (added to Burp **Param Miner**). Research: PortSwigger "Listen to the Whispers: Web Timing Attacks that Actually Work."
+
+### Reliability tuning + confirmation checklist
+```
+- Warm the connection (a few non-static requests first).
+- Disable TCP_NODELAY (let Nagle batch the final frames).
+- Different session token per request (defeat PHP session locking).
+- Trip a rate/resource limit deliberately to induce server delay if the window is too tight.
+- Queue 20-50 copies; look for >1 success or a negative timestamp.
+- Confirm withheld frames left in a single packet via Wireshark.
+- Baseline sequentially first to prove the app normally enforces the limit.
+- Races are probabilistic — show repeated wins / state a win rate (e.g. Eclipse "100% (50/50)").
+```
+
+### Disclosed-report provenance (signal for prioritization)
+Gift-card multi-redeem → free money (Reverb.com, 303 upvotes); duplicate payments/payouts (HackerOne, 237 / 72 upvotes); infinite in-game diamonds via email-activation race (InnoGames, $2000); wallet-balance manipulation (Coinbase, 272); loyalty/cashback claim (Vend); HackerOne 2FA bypass (132); verification-check bypass (Tools for Humanity, $3000); extra free domains (Automattic); undeletable/duplicated group members; vote/poll stuffing from one account. Financial and auth/verification races triage strongest and pay best.

