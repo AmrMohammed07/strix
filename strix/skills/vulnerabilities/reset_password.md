@@ -153,3 +153,33 @@ POST /api/users/1/reset-password
 ## Impact
 - Account takeover without user interaction
 - Mass account takeover if token is predictable
+
+
+## Additional Techniques — ported from WebSkills (reset-password-test)
+
+Deltas beyond the token-predictability / host-header / email-param / OTP coverage above.
+
+### Host-normalization + IDN
+- Beyond raw `Host:`/`X-Forwarded-Host:` injection, try the **normalization forms** so the emailed link points at your host: `victim.com@attacker.com` and the 0xacb normalization table (https://0xacb.com/normalization_table).
+- **IDN homograph → ATO:** submit a look-alike Unicode email so the reset lands on your homograph domain.
+
+### Token-mutation checklist (in addition to predictability/reuse)
+- [ ] Remove the token entirely
+- [ ] `00000000...` / `null` / `nil`
+- [ ] Expired token; **array of old tokens**
+- [ ] Change **1 char** at the start/end (is the token actually evaluated?)
+- [ ] Unicode spoof of the email inside the token
+
+### Token-invalidation matrix (extend the "not expiring" test)
+Confirm the token dies after each of: email change, password change, **first use**, **a new token being issued**, and **login**. Long-timed expiry is its own finding. Also verify the *session* is invalidated on reset (HackerOne #411337).
+
+### HTML injection on the reset page (via display name)
+1. Set your name to `<h1>attacker</h1>` or `"abc><h1>attacker</h1>` and save.
+2. Trigger a reset; the tag renders in the reset email/page.
+3. Escalate with a link: `<h1>attacker</h1><a href="//attacker-domain">Click here</a>`.
+
+### Password-policy-restriction bypass
+Test whether the reset flow accepts passwords the normal policy forbids (HackerOne #1675730).
+
+### Reset via username collision
+Register the victim's username with trailing/leading whitespace (`"admin "`), request a reset for your malicious username, and use the token that lands in your inbox to reset the victim's account (duplicate-account abuse).

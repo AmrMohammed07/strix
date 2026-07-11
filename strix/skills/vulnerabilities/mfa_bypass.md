@@ -388,3 +388,33 @@ For MFA bypass findings, the report MUST include:
 - **Response manipulation**: Never make authentication decisions based on client-provided flags; enforce MFA state server-side
 - **Backup codes**: Hash backup codes at rest; invalidate after single use; require re-authentication to view
 - **Context confusion**: Bind OTP verification to the specific session and user who initiated the MFA challenge
+
+
+## Additional Techniques — ported from WebSkills (2fa-test)
+
+The core file above covers the **Bypass** surface. Two more attack surfaces exist — **Setup** and **Disable** — plus several bypass tricks not listed above. Walk all three; most 2FA findings are logic flaws, not crypto.
+
+### 2FA Setup flaws
+- **Secret not rotated / still obtainable after enable** — after enabling 2FA, look for a path (endpoint or JS) that still leaks the TOTP QR/secret; replay it to re-derive valid codes. (Bugcrowd VRT "2fa-secret-is-not-rotated")
+- **Setup logic flaw via response manipulation** — during authenticator attach, submit a *wrong* code, intercept the response and flip it to success. If the app enables 2FA on a bad code, the victim can be locked out of their own account. (Distinct from post-login response manipulation already covered.)
+- **Old session does not expire after enabling 2FA** — enable 2FA in browser A; a pre-existing session in browser B keeps full access with no 2FA prompt → an attacker who hijacked a pre-2FA session keeps it.
+- **Enable 2FA without verifying email** — sign up with the victim's (unverified) email, log in without verifying, enable 2FA → victim can never register/reset into the account (denial of ownership). (HackerOne #649533)
+- **IDOR → ATO on enable/verify** — register user1, note their ID; from user2's session send the 2FA-enable/verify request with **user1's ID**. If accepted, you enable and then verify 2FA on the victim's account. (HackerOne #810880)
+
+### Extra bypass tricks (not in the main methodology above)
+- **Code not updated after resend** — request a new code; if the old and new codes are identical the code space is effectively smaller / brute-forceable. (Bugcrowd VRT #289)
+- **Null & default codes** — try `null`, `000000`, blank, `123456`, `%00` as the code/verify value.
+- **Referrer-check / direct-request bypass** — navigate directly to the post-2FA authenticated page; if it loads, 2FA is enforced only by a `Referer`/redirect check. Also try forging `Referer` as if you came from the 2FA page.
+- **Cross-account session-permission bypass** — start the 2FA flow with your account *and* the victim's in the same browser session; complete 2FA on **your** account but don't advance, then advance the victim's flow. If the backend only sets a boolean "passed-2FA" in the session, the victim's step is bypassed.
+- **Changing the 2FA mode** — at verify, flip request fields like `"mode":"sms"→"email"` or `"secureLogin":true→false`; some backends only enforce one mode. (HackerOne #665722)
+- **OAuth skips 2FA** — if "Login with Facebook/Google" logs the user in without ever hitting the 2FA prompt, the social path bypasses 2FA entirely. (HackerOne #178293)
+- **Strip the 2FA cookie part** — remove only the cookie component responsible for the 2FA gate and replay. (HackerOne #2315420)
+
+### Disable 2FA surface
+- **No rate limit on disable** — the "confirm password to disable" step is often unthrottled; fuzz it. (HackerOne #1465277)
+- **Disable via CSRF** — the disable-2FA endpoint frequently lacks CSRF protection; a cross-site POST (or a null-char token override submitted twice) turns off the victim's 2FA. (HackerOne #670329)
+- **Password reset / email check disables 2FA** — enable 2FA, log out, run password reset, then log in — if no 2FA is requested after reset, reset silently strips 2FA.
+- **Password not actually checked on disable** — submit the disable request with a valid authenticator/backup code but a *wrong* password; if it succeeds the password check is cosmetic. (HackerOne #587910)
+- **Logic-bug disable** — replay the disable request against a sibling endpoint (e.g. `/api/user/two-factor/set`) with a mode/phone body to overwrite/disable without valid confirmation. (HackerOne #783258)
+- **Backup-code abuse** — backup codes are often generated once and static; if a CORS/XSS bug lets you read the backup-code endpoint response, you steal them and bypass 2FA with known password. (HackerOne #113953, #100509)
+- **Clickjacking the disable page** — if the disable-2FA page is framable, UI-redress a victim into turning off their own 2FA.

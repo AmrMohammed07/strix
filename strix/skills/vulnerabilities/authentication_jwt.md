@@ -154,3 +154,27 @@ JWT/OIDC failures often enable token forgery, token confusion, cross-service acc
 ## Summary
 
 Verification must bind the token to the correct issuer, audience, key, and client context on every acceptance path. Any missing binding enables forgery or confusion.
+
+
+
+## Additional Techniques — ported from WebSkills (improper-authentication-testing)
+
+### Fast JWT triage (run before deep attacks)
+- **All-tests scan:** `python3 jwt_tool.py -M at -t "<url>" -rh "Authorization: Bearer <JWT>"` then dump the flagged token with `jwt_tool.py -Q "<jwttool_id>"`.
+- **Is the token required?** Remove it and resend — unchanged response means the JWT isn't the real auth mechanism (check other headers/cookies).
+- **Is the signature checked?** Delete the last few signature chars. Same page = signature not verified → tamper claims directly.
+- **Is the token persistent/immortal?** Replay the same token interspersed with invalid ones; if it works indefinitely, retest in ~24h and report a never-expiring token.
+- **Claim processing order:** alter a benign payload field (e.g. profile image URL) with the signature untouched; if the change is reflected, the app processes claims *before/without* verifying the signature.
+
+### Algorithm confusion with NO exposed public key (sig2n)
+When the app is RS256 but you can't find `/.well-known/jwks.json`, recover the public key from two captured tokens and forge an HS256 token signed with it:
+```bash
+# collect two JWTs (login → copy → logout → login → copy second)
+docker run --rm -it portswigger/sig2n <token1> <token2>   # github.com/silentsignal/rsa_sign2n
+# for each candidate n it prints, test the forged JWT: 200 = correct key, 302→/login = wrong
+```
+Then in Burp JWT Editor: New Symmetric Key → replace `k` with the Base64 key, set `alg:HS256`, change `sub` to `administrator`, sign.
+
+### Miscellaneous acceptance bugs
+- **JTI short-ID replay:** if `jti` is only 4 digits (0001–9999), IDs wrap — a replayed request can collide with a valid ID after enough requests, defeating replay protection.
+- **Example / foreign-token acceptance:** backends that verify signature but not audience will accept any validly-signed JWT (e.g. a vendor's example token from docs, or a token minted for another tenant/service). Test cross-service relay: sign up on another client of the same shared JWT service with the same email, then replay that token at the target.

@@ -220,3 +220,37 @@ Set-Cookie: session=TOKEN; Path=/
 ## Summary
 
 Session management is the foundation of authentication. Test token entropy, fixation, logout invalidation, and cookie flags systematically. A single weakness — a predictable token or surviving session after logout — gives attackers full account access without needing credentials.
+
+
+## Additional Techniques — ported from WebSkills (session-fixation-test)
+
+Deepens the Session Fixation section above. The one question: *does the server bind a session to a user without first issuing a brand-new session identifier?*
+
+### The decisive test: old-value survival (not "did the cookie change")
+Many apps set a new cookie on login yet never invalidate the old server-side record. Always **replay the pre-auth value in Repeater** after login — authenticated response = the old SID is still alive = vulnerable. Disable Burp's Cookie Jar for this test (its silent auto-update can mask or fake the bug). Screenshot three states: pre-auth value, post-auth value (unchanged), and old-value replay returning authenticated content.
+
+### Test at every privilege boundary (not just form login)
+Rotation is frequently done on plain login but skipped on:
+- **MFA / 2FA step-up** — if the SID is fixed *before* the second factor and unchanged after, you've **bypassed MFA**; report it as such.
+- **OAuth / SSO callback** — form-login may rotate while `/callback` reuses the pre-auth app session; diff the cookie across the IdP round-trip specifically.
+- **"Remember me" / persistent login** — a long-lived token minted from a fixed pre-auth SID widens the window dramatically.
+- **Registration auto-login, role/tenant/org switch, "confirm password to continue" re-auth, invite acceptance.**
+
+### Remote fixation primitives (how the attacker plants the SID)
+- **URL / path acceptance:** `?Set-Cookie=SID` or `;jsessionid=SID` written into a cookie — classic, high-impact.
+- **CRLF → Set-Cookie injection:** an unsanitized reflected header lets you smuggle `%0d%0aSet-Cookie:%20SESSION=ATTACKER_SID` (pairs with `crlf_injection.md`).
+- **Subdomain cookie scoping:** a foothold on `*.target.com` sets `Domain=.target.com; SESSION=...` that the apex app then upgrades on login.
+- **Header injection:** `Host` / `X-Forwarded-Host` reflected into `Set-Cookie` Domain/Path.
+- **Meta/HTML injection:** `<meta http-equiv="Set-Cookie" ...>` on legacy parsers.
+- **XSS-assisted:** `document.cookie="SESSION=ATTACKER_SID; path=/"` turns a low-impact XSS into clean ATO.
+
+### Rotation edge cases to probe
+- **Partial rotation:** auth cookie rotates but a secondary session/identity cookie stays fixed and is sufficient to ride the session.
+- **Multi-cookie sessions** (session + signature): both must rotate.
+- **Rotate-on-first-write, not on auth:** verify rotation is actually tied to the privilege change (use old-value replay, not the immediate `Set-Cookie`).
+
+### Fixation-specific false positives
+- One browser profile = contaminated cookie jar → always use two isolated contexts.
+- A CSRF/analytics cookie stayed constant but the *real* auth cookie rotated — identify the actual authorizing cookie first.
+- Stateless/JWT "session" cookie *is* the identity and changes claims on login — sameness of a non-session cookie is irrelevant.
+- New cookie issued **and** the old value is truly dead on replay = correct behaviour, not a bug.

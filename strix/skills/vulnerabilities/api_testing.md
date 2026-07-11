@@ -505,3 +505,65 @@ Any authenticated user can promote themselves to admin by adding `"role":"admin"
 - Parameter discovery: hidden parameter found but it doesn't affect response or behavior → NOT a vulnerability
 - API authentication not required on public endpoint: check if it's documented as public → if yes, NOT a vulnerability
 - Different error messages for different invalid inputs: informational unless it reveals sensitive data (user existence, file paths, SQL syntax)
+
+
+## Additional Techniques — ported from WebSkills (api-test)
+
+Methodology framing around the **OWASP API Security Top 10**, plus tooling/payloads that complement the Python-driven phases above. Core mindset: **enumerate the full attack surface (versions, hosts, hidden/legacy/mobile endpoints) before testing any single bug, and always operate with ≥2 accounts + a role ladder** — most authorization bugs are invisible with one account.
+
+### OWASP API Top 10 quick map
+| ID | Class | Primary test |
+|----|-------|--------------|
+| API1 | BOLA / object-level | Token-swap UserA↔UserB on every resource-ID request |
+| API2 | Broken authentication | Weak JWT, token predictability, brute/spray, creds-in-URL |
+| API3 | Object-property authz / excessive data exposure | Read raw JSON for over-returned fields; write forbidden props |
+| API4 | Unrestricted resource consumption | Rate limits on auth/OTP/coupon; pagination, upload size |
+| API5 | BFLA / function-level | Fuzz admin funcs, method-swap, anon access |
+| API6 | Unrestricted business flows | Skip/repeat/reorder/parallelize intended flows |
+| API7 | SSRF | URLs in body/param/header → Collaborator/webhook.site |
+| API8 | Security misconfiguration | CORS, stack traces, debug, Swagger exposure |
+| API9 | Improper inventory mgmt | Zombie/shadow versions & hosts |
+| API10 | Unsafe consumption of 3rd-party APIs | Treat their data as untrusted input |
+
+### Recon tooling & sources (supplement to the doc-path sweep)
+```
+amass enum -active -d target.com | grep api
+gobuster dir -u https://host/ -w api_wordlists/common_apis -x 200,202,301 -b 302
+kr scan  http://host -w routes-large.kite        # Kiterunner endpoint discovery
+kr brute host -w wordlist.txt
+```
+Third-party surfaces: **GitHub / GitDorking** (search `swagger.json`, run Trufflehog for secrets), **Postman Explore**, **APIs Guru**, **RapidAPI Hub**, **ProgrammableWeb**, **Wayback** (historical docs → zombie APIs), **Shodan** (`hostname:"target" "content-type: application/json"`). Watch error hints like `{"message":"Missing Authorization token"}`.
+
+### Token attacks
+- **Burp Sequencer**: live-capture tokens → analyze randomness; load the "bad tokens" set to spot sequential/predictable generation.
+- **jwt_tool**: `jwt_tool -t https://host/ -rh "Authorization: Bearer <JWT>" -M pb`; None attack, alg-switch (`-X a`), crack secret (`jwt_tool TOKEN -C -d wordlist.txt`).
+- Base64-encoded auth payloads add **no** security — use Intruder base64 processing.
+- Password brute/spray with Wfuzz; maximize the **user list** (build it from Excessive Data Exposure) rather than the password list.
+
+### Improper Assets Management — version enumeration (API9)
+Turn the version segment into a variable and diff responses:
+```
+Postman: find/replace v2 → {{ver}}, set ver ∈ {v1,v2,v3,mobile,internal,test,uat}
+Anomaly to hunt: a non-existent path returning 200, or an OLD version missing a control the current one added.
+```
+Classic chain: old `v2/check-otp` lacks the rate limit `v3` added → brute OTP there:
+```
+wfuzz -d '{"email":"x@y.com","otp":"FUZZ","password":"New1"}' -H 'Content-Type: application/json' \
+  -z file,4-digits-0000-9999.txt -u https://host/identity/api/auth/v2/check-otp --hc 500
+```
+
+### Injection payload sets (API-context)
+```
+SQLi meta:  '  ''  ;%00  -- -  " OR ""="  " OR 1=1 -- -  ' OR '' = '  OR 1=1
+NoSQL:      {"$gt":""}  {"$gt":-1}  {"$ne":""}  {"$ne":-1}  {"$nin":[1]}  {"$where":"sleep(1000)"}
+```
+High-value fuzz targets: `login`, `change-email`, `verify-email-token`, `check-otp`, `validate-coupon`, `orders`, `videos by id`.
+
+### WAF / rate-limit evasion (API4/API8)
+- **String terminators** in path/body: `%00 0x00 // ; % ! ? [] %5B%5D %09 %0a %0b %0c %0e`.
+- **Case switching**: `/api/v1/login → /Api/V1/Login → /API/V1/LOGIN` (defeats exact-match rate limits).
+- **Encoding**: URL, double-URL, base64, HTML-entity (e.g. WAF blocks `' OR 1=1--` but allows `%27%20OR%201%3D1--`).
+- Chain encoders in Burp Intruder payload-processing / Wfuzz. Reference: github.com/0xInfection/Awesome-WAF.
+
+### ZAP for spec-driven scanning
+Import the OpenAPI/`specs.yml` + target URL → Active Scan; for auth'd coverage use Manual Explore + HUD (Attack Mode On). Always manually confirm — scanners over-report (200-on-error, own-data "BOLA").

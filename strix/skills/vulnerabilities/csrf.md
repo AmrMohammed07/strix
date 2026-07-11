@@ -474,3 +474,35 @@ Any attacker who tricks an authenticated user into visiting a malicious webpage 
 - CSRF token missing on low-impact action (e.g., changing notification sound preference): Low severity at most
 - Login CSRF without further impact: Low only (forces victim to be logged in as attacker, but victim will notice)
 - Logout CSRF alone: Low (annoying but no data theft, unless chained with other vulnerabilities)
+
+
+
+## Additional Techniques — ported from WebSkills (csrf-test)
+
+Concrete token-defeat bypasses to try when a CSRF token *is* present and the content-type/SameSite bypasses above did not apply:
+
+**Double-submit cookie bypass (attacker-chosen matching tokens)**
+If validation only checks that the `csrf_token` cookie equals the `csrf_token` body field (never that either is server-issued), set BOTH to the same arbitrary value. If the app reflects/accepts an attacker-set cookie (e.g. via a cookie-injection sink or a subdomain that can set cookies on the parent domain), the check passes:
+```
+Cookie: csrf_token=not_a_real_token
+Body:   csrf_token=not_a_real_token
+```
+
+**Static-vs-dynamic token part**
+Some anti-CSRF tokens concatenate a static (per-account, never-rotating) segment and a dynamic (per-request) segment. In Burp, diff several tokens for the same user: if a leading/trailing substring is constant, try submitting ONLY the static part (or padding the dynamic part with a fixed length). Reused old tokens from prior requests that still validate = broken integrity → treat as no protection.
+
+**Token = reversible hash**
+If the token looks like a hash/encoded value, try to identify and reverse it (base64/hex/md5-of-known-input). A token derived from a predictable value (username, timestamp, user id) is attacker-forgeable.
+
+**User-Agent-based skip**
+Some backends skip the anti-CSRF check for "mobile"/"app" clients. Replay the state-changing request from a browser/tablet/mobile `User-Agent` string; if the token requirement disappears, the CSRF page just needs the same UA.
+
+**Referer-check defeat via History API**
+When the server validates Referer by substring (`contains target.com`), pair the classic `<meta name="referrer" content="no-referrer">` removal with a `history.pushState` to fake the path so a naive check sees a "trusted-looking" Referer:
+```html
+<script>history.pushState('', '', '/anything@target.com')</script>
+<!-- Referer becomes https://evil.com/anything@target.com — passes a `contains target.com` check -->
+```
+
+**Subdomain-takeover + CORS chain to steal the token**
+If the token is only readable same-origin but a dangling subdomain of the target can be taken over AND CORS trusts `*.target.com`, host script on the taken-over subdomain to read the token cross-origin (`withCredentials`) and then submit the forged request. This converts an otherwise-protected endpoint into a CSRF (chains with cors_misconfiguration.md and subdomain_takeover.md).

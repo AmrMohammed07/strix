@@ -475,3 +475,30 @@ Any attacker who tricks an authenticated user into visiting their malicious webs
 - Subdomain in allowlist: only reportable if that subdomain is demonstrably vulnerable to takeover
 - Null origin: only reportable if you demonstrate a working sandboxed iframe PoC that exfiltrates data
 - Wildcard with Bearer tokens: only reportable if Bearer token is stored in a location accessible cross-origin (e.g., localStorage, not httpOnly cookies)
+
+
+
+## Additional Techniques — ported from WebSkills (cors-test)
+
+Extra `Origin` header values to add to the Step 2 variant array — these target *parser-confusion* validators (regex/split-based allowlists) rather than simple prefix/suffix checks:
+
+```python
+parser_confusion_origins = [
+    "expected-host.computer",              # suffix-TLD: allowlist regex anchored on "expected-host." but not the TLD
+    "foo@evil-host:80@expected-host",      # double-@ userinfo confusion (validator reads last host, browser reads first)
+    "foo@evil-host%20@expected-host",      # %20 in userinfo
+    "evil-host%09expected-host",           # %09 (tab) treated as delimiter by one parser, literal by the other
+    "sub.evil%expected-host.com",          # % breaks naive host parsing
+    "evil-host%00.expected-host.com",      # null byte truncation on legacy parsers
+    "127.1.1.1:80\\@127.2.2.2:80",         # backslash host confusion
+    "https://ß.expected-host.com",         # IDN: ß may normalize to "ss" post-IDNA → allowlist drift
+    "https://expected-host。com",           # full-width dot IDN variant
+]
+# For each: send with the victim session cookie; VULNERABLE if the reflected
+# Access-Control-Allow-Origin echoes your attacker-controlled origin AND
+# Access-Control-Allow-Credentials: true.
+```
+
+**Tooling for scale**
+- Single target (Burp): spider the app, then Burp-search responses for `Access-Control`; on each hit inject `Origin: attacker.com` / `Origin: null` / `Origin: attacker.target.com` and check for reflection.
+- Mass scan: [CorsMe](https://github.com/Shivangx01b/CorsMe) — `cat live_hosts.txt | ./CorsMe -t 70`. Pipe a normal `subfinder -d target.com | httpx` host list through it to triage which endpoints reflect the origin before manual credential+sensitive-data confirmation.

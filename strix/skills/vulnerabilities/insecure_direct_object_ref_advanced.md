@@ -290,3 +290,29 @@ query {
 ## Summary
 
 IDOR is found by systematically replacing your IDs with others' IDs across all endpoints, especially write operations. The highest value is IDOR on email-change, delete-account, or financial endpoints that enable ATO or data loss. Always create two test accounts and use one's token to access the other's resources.
+
+
+## Harvesting "unpredictable" (UUID/GUID) IDs — ported from WebSkills (idor-403-bypass)
+
+Unpredictable IDs are not un-leakable. Recover other users' UUIDs via:
+```
+Wayback CDX : https://web.archive.org/cdx/search/cdx?url=*.TARGET/*&output=text&fl=original&collapse=urlkey
+AlienVault OTX : https://otx.alienvault.com/api/v1/indicators/{TYPE}/{DOMAIN}/url_list?limit=500
+URLScan      : https://urlscan.io/api/v1/search/?q=domain:{DOMAIN}&size=10000
+Common Crawl, VirusTotal domain report
+Tools        : waymore / waybackurls / gau → regex-extract UUIDs
+Google & GitHub search, browser history, web/proxy logs
+Referrer header leakage, OAuth "Sign in with" buttons (org UUID in URL)
+Clickjacking, accidental screen share, hard-coded IDs in JS/repos
+Fixed IDs    : 000...0 / 111...1 for admin/test accounts
+Old UUIDs via Wayback → brute-force sequential neighbours
+```
+
+### UUID version fingerprint (the `M` digit `xxxxxxxx-xxxx-Mxxx-Nxxx-xxxxxxxxxxxx`)
+| Version | Meaning | Attack note |
+|---|---|---|
+| 1 | Time + node based | Timestamp + node recoverable → brute the random clock bits (e.g. to forge reset tokens) |
+| 3/5 | Name-based (MD5 / SHA-1) | If input is guessable, the UUID is computable |
+| 4 | Random | Enumeration infeasible → must leak the value |
+| 0 (nil) | `00000000-...` | Often default/test accounts |
+Decode tooling: uuidtools.com/decode. Relying on UUIDv1 for sensitive tokens is inherently insecure.

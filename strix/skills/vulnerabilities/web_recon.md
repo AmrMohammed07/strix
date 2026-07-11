@@ -492,3 +492,68 @@ Save to `/workspace/recon_report.md`:
 Created: /workspace/endpoint_checklist.md
 Total endpoints: [N]
 ```
+
+
+## Additional Techniques — ported from WebSkills (web2-recon)
+
+Recon exists to decide **what to test first** and **whether the target is worth time at all**. After the endpoint checklist is built, run this prioritization layer.
+
+### Target Scoring — Go / No-Go (score before spending time)
+
+| Criterion | Points |
+|---|---|
+| Large user base (>100K) or handles money/PII | +2 |
+| Complex features: API, OAuth, file upload, GraphQL, multi-tenancy | +1 |
+| Recent code/feature changes (new endpoints in JS diff, changelog) | +1 |
+| Tech stack with a known-CVE footgun (see `framework_1day_rce.md`) | +1 |
+| Source code / API docs available | +1 |
+| Admin / internal / debug surface reachable | +1 |
+
+**Pre-dive hard kill signals** (skip the host, 5-minute rule):
+1. Scope is only a static marketing page — no forms, no auth, no user data.
+2. All subdomains return 403 / static pages; no API endpoints in URLs or JS.
+3. No JavaScript bundles with interesting endpoint paths.
+4. Automated template scan returns 0 medium/high; no anomalies in headers/timing.
+
+### Stack → Primary Bug-Class Routing
+
+Once fingerprinting identifies the stack, hunt these first (highest hit-rate per stack):
+
+| Stack | Hunt First | Hunt Second |
+|---|---|---|
+| Ruby on Rails | Mass assignment | IDOR (`:id` routes) |
+| Django | IDOR (ModelViewSet, no object perms) | SSTI (`mark_safe`) |
+| Flask | SSTI (`render_template_string`) | SSRF (requests lib) |
+| Laravel | Mass assignment (`$fillable`) | IDOR (Eloquent, no ownership) |
+| Express / Node | Prototype pollution | Path traversal + `/_debug` surface |
+| Spring Boot | Actuator endpoints (`/actuator/*`) → `framework_1day_rce.md` | SSTI (Thymeleaf) |
+| ASP.NET | ViewState deserialization | Open redirect (`ReturnUrl`) |
+| Next.js | SSRF via Server Actions + `/_next/data/` leak | Open redirect via `redirect()` |
+| GraphQL | Introspection → auth bypass on mutations | IDOR via `node(id:)` |
+| WordPress | Plugin SQLi | REST API auth bypass (`/wp-json/`) |
+| SPA (React/Vue/Angular) | DOM XSS via state/router sinks | Client-side route auth bypass (role check only in JS) |
+
+### URL Triage — Classify the Crawl/Archive Output
+
+```bash
+# Params worth testing
+grep -E "[?&](id|user|file|path|url|redirect|next|src|token|key|api_key)=" urls.txt
+# API / upload / admin / auth surfaces
+grep -E "/api/|/v[0-9]/|/graphql|/rest/" urls.txt
+grep -E "upload|file|attachment|avatar|import" urls.txt
+grep -E "/admin|/internal|/debug|/staging|/console" urls.txt
+grep -E "/oauth|/login|/sso|/saml|/callback|/token" urls.txt
+
+# gf pattern classification (tomnomnom/gf)
+cat urls.txt | gf ssrf     # then route to ssrf.md
+cat urls.txt | gf idor     # then route to idor.md
+cat urls.txt | gf redirect # then route to open_redirect.md
+cat urls.txt | gf sqli | gf xss | gf lfi | gf rce
+```
+
+### Post-Triage Priority Order
+1. API endpoints with ID params → IDOR/BOLA.
+2. File-upload features → XSS/RCE.
+3. OAuth/SSO flows → auth-bypass / redirect_uri abuse.
+4. Search/filter/sort with user input → SQLi/SSRF/SSTI.
+5. Admin/debug endpoints → auth bypass + error-disclosure chains.

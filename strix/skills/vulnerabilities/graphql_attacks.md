@@ -257,3 +257,59 @@ GET /graphql?operationName=allowed&query={malicious}
 ## Summary
 
 GraphQL's flexibility is its attack surface. Introspection, batching, and single-endpoint design make it easy to enumerate data and bypass controls designed for traditional REST APIs. Test authorization at every resolver, cap query depth/complexity, and disable introspection in production.
+
+
+## Additional Techniques — ported from WebSkills (graphql-test)
+
+### Introspection-Disabled Bypass Matrix
+
+When `__schema` is blocked, don't stop — recover the schema another way:
+
+- **`__type` canary** — many WAFs block `__schema` but not `__type`:
+  ```graphql
+  { __type(name:"Query") { name } }
+  ```
+- **Non-production subdomains** — `staging.`, `dev.`, `test.` often leave introspection on. (See Black-Hat-GraphQL `non-production-graphql-urls.txt`.)
+- **Type stuffing** — GraphQL type names are UpperCamelCase; guess them via `__type(name:"PasteObject"){ fields { name } }`.
+- **Field stuffing** — query a batch of likely-sensitive field names (`password`, `ssn`, `apiKey`, `token`, `sin`) directly and see which resolve.
+- **Engines that can't disable introspection** — Graphene (Python), graphql-go, graphql-java have **no disable option** → always attempt a direct `__schema` pull against these. Ariadne, graphql-php, graphql-ruby *can* disable it.
+- **GET PII leakage** — some servers accept queries over GET (`/graphql?query=...&debug=1`); data then leaks into browser history, referrer headers, and proxy logs.
+
+### Fingerprint the Engine First (graphw00f)
+
+Different engines → different CVEs and behaviors. `python3 graphw00f/main.py -d -t <url>` (or the Nmap `graphql-introspection.nse` script). Map the detected engine → language → introspection default before choosing attacks.
+
+### Extra DoS Vectors (beyond nesting/circular/field-dup)
+
+- **Directive overloading** — `title @aa@aa@aa@aa ...` (append thousands of directives).
+- **Object-limit override** — override pagination: `pastes(limit: 100000, public: true){ content }` → forces `... LIMIT 100000`.
+- **Detection tooling** — `BatchQL` (`python3 batch.py -e <url>`), `graphql-cop -t <url>`, and InQL cycle generation (`inql -t <url> --generate-cycles`).
+
+### Authentication / Authorization Bypass
+
+- **Auth-layer fingerprint via error strings:**
+
+  | Error message | Likely auth implementation |
+  |---|---|
+  | "Authentication credentials are missing. Authorization header is required" | OAuth2 Bearer + JWT |
+  | "Not Authorised!" | GraphQL Shield |
+  | "Not logged in / Auth required / API key is required" | GraphQL Modules |
+  | "Invalid token! / Invalid role!" | graphql-directive-auth |
+
+- **JWT `alg:none`** — decode the handshake JWT header; if the server honors `alg:none`, forge unsigned tokens (full method in `improper-authentication-testing`).
+- **Batching brute-force (rate-limit bypass)** — pack N `login` mutations under aliases in one request; automate with **CrackQL** (`CrackQL.py -t <url> -q login.graphql -i creds.csv`).
+- **Operation-name allow-list bypass / audit-log evasion** — reuse an allow-listed operation name to carry an unauthorized operation:
+  ```graphql
+  mutation RegisterAccount {              # allow-listed name
+      withdrawal(amount: 100.00, from: "ACT001", dest: "ACT002") { confirmationCode }
+  }
+  ```
+- **Enumerate all paths to a sensitive type** with `graphql-path-enum -i introspection.json -t <Type>`, then test **inconsistent protection** — singular vs plural resolvers (`pastes` protected, `paste`/`readAndBurn` not).
+
+### Introspection / Recon over WebSocket (WAF Bypass)
+
+Subscriptions run over WebSocket — a different code path that WAFs and auth middleware often miss. Open `wss://target/graphql` with subprotocol `graphql-ws` and send an introspection query in the `start`/`subscribe` payload to leak the schema when HTTP introspection is filtered. Also try `__schema{ subscriptionType{ fields{ name } } }` to map subscription fields for CSWSH (see websocket_security.md).
+
+### Tooling Reference
+
+`graphw00f` (fingerprint) · `InQL` (schema/TSV export, Burp ext) · `Clairvoyance` + `CeWL` wordlist (field discovery when introspection off) · `BatchQL` / `graphql-cop` (DoS + CSRF checks) · `CrackQL` (batched brute-force) · `graphql-path-enum` (authz paths) · `Commix` (OS-cmd injection in resolver args) · `sqlmap -r request.txt` (SQLi in filter/search args).

