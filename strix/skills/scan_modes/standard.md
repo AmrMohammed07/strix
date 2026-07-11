@@ -305,6 +305,11 @@ SPAs hide routes with no visible link — dump the router table via execute_js
 (window.__NEXT_DATA__ / $router.getRoutes() / grep bundle for path:"…") and `goto`
 each link-less route per role. Log every seen-but-unopened tab/modal/route to
 /workspace/ui_surface.md as `[ ] pending`; not UI-complete until all are `[x]`.
+Every link-less route you discover AND every API request it fires when you `goto` it
+→ add to /workspace/endpoint_checklist.md as well, not only ui_surface.md. The two
+ledgers are not interchangeable: ui_surface.md tracks whether a section was visited;
+endpoint_checklist.md tracks whether its endpoints were tested. A route is done only
+when it is `[x]` in both. Same for each multi-step-form step's endpoint.
 
 ### State-Changing Actions — Complete ALL
 Execute through UI and capture full HTTP request/response for each:

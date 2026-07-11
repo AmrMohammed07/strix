@@ -381,6 +381,12 @@ Then grep the deobfuscated bundle for CLIENT routes, not just API endpoints:
 For every route NOT reachable via a visible link: browser `goto` it directly with
 EACH role's session and record the result.
 
+Every link-less route you discover AND every API request it fires when you `goto`
+it → add to /workspace/endpoint_checklist.md as well, not only ui_surface.md. The
+two ledgers are not interchangeable: ui_surface.md tracks whether a section was
+visited; endpoint_checklist.md tracks whether its endpoints were tested. A route is
+done only when it is `[x]` in both. Same for each multi-step-form step's endpoint.
+
 ### Durable UI-surface ledger — /workspace/ui_surface.md
 Mirror endpoint_checklist.md for UI. The instant you SEE a nav item / tab / modal /
 route — even if you don't open it yet — record it as `[ ] pending`. Mark `[x]` only
