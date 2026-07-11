@@ -356,7 +356,7 @@ Use this checklist for every page discovered:
 ```
 For EACH page:
 [ ] Take screenshot of page in initial state
-[ ] Run: document.querySelectorAll('button,a,[onclick],[ng-click],[v-on],[data-action],[role=button]')
+[ ] Run: document.querySelectorAll('button,a,[onclick],[ng-click],[v-on],[data-action],[role=button],[role=tab],[role=menuitem],[aria-expanded],[aria-haspopup],[data-toggle],summary')
 [ ] Click EVERY clickable element — observe result — take screenshot
 [ ] Open EVERY modal, dialog, drawer, tooltip, popover
 [ ] Fill EVERY form with valid data → submit → record HTTP request
@@ -364,6 +364,30 @@ For EACH page:
 [ ] Monitor ALL network requests via proxy during each interaction
 [ ] Add ALL newly discovered endpoints to /workspace/endpoint_checklist.md
 ```
+
+### SPA Route & Hidden-Section Discovery — routes with no visible link
+`querySelectorAll` only sees the CURRENT DOM. SPAs register routes with NO visible
+link (admin views, feature-flagged pages, deep-linked wizard steps). Pull the router
+table directly so these are not missed (browser execute_js / view_source):
+
+- Next.js:   window.__NEXT_DATA__ (page, buildId); enumerate /_next/static/ chunks
+- React Router: search bundle for  path:"…"  route defs; window.__reactRouterManifest
+- Vue Router: $router.getRoutes().map(r=>r.path)
+- Angular:  grep bundle for "loadChildren" / "path:" route configs
+
+Then grep the deobfuscated bundle for CLIENT routes, not just API endpoints:
+  grep -rhoE "path:\s*['\"][^'\"]+['\"]" /workspace/js_deobfuscated/ | sort -u >> /workspace/ui_surface.md
+
+For every route NOT reachable via a visible link: browser `goto` it directly with
+EACH role's session and record the result.
+
+### Durable UI-surface ledger — /workspace/ui_surface.md
+Mirror endpoint_checklist.md for UI. The instant you SEE a nav item / tab / modal /
+route — even if you don't open it yet — record it as `[ ] pending`. Mark `[x]` only
+after it's been visited and its requests captured. UI exploration is NOT complete
+while any `[ ] pending` section or route remains (same gate spirit as RULE 6).
+Multi-step forms: advance each wizard to completion, logging every step's distinct
+form + endpoint as its own ledger line.
 
 ### State-Changing Actions — Execute ALL That Apply
 For every action below, perform it through the UI AND capture the full HTTP request/response:

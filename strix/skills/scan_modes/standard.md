@@ -300,6 +300,12 @@ For EVERY page, tab, and feature:
 7. Add ALL newly discovered endpoints to /workspace/endpoint_checklist.md
 ```
 
+### SPA routes & UI ledger
+SPAs hide routes with no visible link — dump the router table via execute_js
+(window.__NEXT_DATA__ / $router.getRoutes() / grep bundle for path:"…") and `goto`
+each link-less route per role. Log every seen-but-unopened tab/modal/route to
+/workspace/ui_surface.md as `[ ] pending`; not UI-complete until all are `[x]`.
+
 ### State-Changing Actions — Complete ALL
 Execute through UI and capture full HTTP request/response for each:
 1. Create a resource → IMMEDIATELY test IDOR with User B after creation
