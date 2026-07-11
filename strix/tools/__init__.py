@@ -54,6 +54,7 @@ if not SANDBOX_MODE:
     from .python import *  # noqa: F403
     from .reporting import *  # noqa: F403
     from .terminal import *  # noqa: F403
+    from .test_inbox import *  # noqa: F403
     from .thinking import *  # noqa: F403
     from .todo import *  # noqa: F403
 
