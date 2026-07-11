@@ -21,8 +21,8 @@ def restore_sub_agents(checkpoint_data: Any, llm_config: Any) -> list[str]:
 
     Returns the list of agent_ids that were successfully restored.
     """
-    from strix.agents.StrixAgent import StrixAgent
     from strix.agents.state import AgentState
+    from strix.agents.StrixAgent import StrixAgent
     from strix.tools.agents_graph import agents_graph_actions
 
     sub_agent_states: dict[str, Any] = checkpoint_data.sub_agent_states or {}

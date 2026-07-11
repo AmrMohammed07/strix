@@ -11,7 +11,9 @@ from rich.panel import Panel
 from rich.text import Text
 
 from strix.agents.StrixAgent import StrixAgent
-from strix.interface.checkpoint_restore import build_root_resume_message as _build_resume_context_message
+from strix.interface.checkpoint_restore import (
+    build_root_resume_message as _build_resume_context_message,
+)
 from strix.interface.checkpoint_restore import restore_sub_agents as _restore_sub_agents
 from strix.llm.config import LLMConfig
 from strix.telemetry.tracer import Tracer, set_global_tracer
@@ -230,8 +232,7 @@ async def run_cli(args: Any) -> None:  # noqa: PLR0915
         tracer.vulnerability_reports.extend(checkpoint_data.tracer_vulnerability_reports)
         # Advance execution ID counter past old IDs to avoid collisions with
         # tool executions the live scan will create.
-        if checkpoint_data.tracer_next_execution_id > tracer._next_execution_id:
-            tracer._next_execution_id = checkpoint_data.tracer_next_execution_id
+        tracer._next_execution_id = max(tracer._next_execution_id, checkpoint_data.tracer_next_execution_id)
 
     # Added for Resume Feature — show resume banner + replay previous output
     if is_resuming and checkpoint_data:

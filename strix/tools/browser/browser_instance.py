@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 from typing import Any, cast
 
+
 try:
     import uvloop as _uvloop  # type: ignore[import-untyped]
     _LOOP_POLICY: asyncio.AbstractEventLoopPolicy = _uvloop.EventLoopPolicy()

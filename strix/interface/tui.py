@@ -29,7 +29,9 @@ from textual.widgets import Button, Label, Static, TextArea, Tree
 from textual.widgets.tree import TreeNode
 
 from strix.agents.StrixAgent import StrixAgent
-from strix.interface.checkpoint_restore import build_root_resume_message as _build_root_resume_message
+from strix.interface.checkpoint_restore import (
+    build_root_resume_message as _build_root_resume_message,
+)
 from strix.interface.checkpoint_restore import restore_sub_agents as _restore_sub_agents_tui
 from strix.interface.streaming_parser import parse_streaming_content
 from strix.interface.tool_components.agent_message_renderer import AgentMessageRenderer
@@ -720,8 +722,7 @@ class StrixTUIApp(App):  # type: ignore[misc]
             self.tracer.chat_messages.extend(_cp.tracer_chat_messages)
             self.tracer.vulnerability_reports.extend(_cp.tracer_vulnerability_reports)
             # Advance execution ID counter past previous session IDs
-            if _cp.tracer_next_execution_id > self.tracer._next_execution_id:
-                self.tracer._next_execution_id = _cp.tracer_next_execution_id
+            self.tracer._next_execution_id = max(self.tracer._next_execution_id, _cp.tracer_next_execution_id)
 
         self.agent_nodes: dict[str, TreeNode] = {}
 

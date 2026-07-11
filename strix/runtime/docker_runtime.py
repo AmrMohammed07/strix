@@ -6,7 +6,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import docker
 import httpx
@@ -155,7 +155,7 @@ class DockerRuntime(AbstractRuntime):
         # Remove each by ID (synchronous — blocks until Docker is done).
         for cid in ids_to_remove:
             try:
-                subprocess.run(  # noqa: S603 S607
+                subprocess.run(  # noqa: S603
                     ["docker", "rm", "-f", cid],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -167,7 +167,7 @@ class DockerRuntime(AbstractRuntime):
 
         # Belt-and-suspenders: also remove by name in case the label was not set.
         try:
-            subprocess.run(  # noqa: S603 S607
+            subprocess.run(  # noqa: S603
                 ["docker", "rm", "-f", container_name],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
