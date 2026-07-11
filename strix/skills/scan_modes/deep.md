@@ -130,6 +130,12 @@ done
 wafw00f https://target.com -o /workspace/waf_result.txt
 ```
 
+For EVERY product + version fingerprinted above (Server / X-Powered-By headers, JS
+library versions, CMS/framework), use the `web_search` tool to pull known
+CVEs/advisories for that exact version — it complements nuclei by catching issues
+newer than the local templates and returns exploit/PoC context. Also `web_search`
+the detected WAF name + "bypass <year>" before spending time hand-rolling evasions.
+
 ### Build Complete Endpoint Checklist
 Create /workspace/endpoint_checklist.md with EVERY discovered endpoint.
 Format: `[ ] [METHOD] [PATH] — [type: public/auth/admin/api/upload/ws/gql] — pending`

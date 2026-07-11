@@ -115,6 +115,8 @@ uncover -q "ssl.cert.subject.CN:target.com" -e censys,fofa,shodan
 ```
 Also check: S3Scanner for buckets, aem-hacker for AEM, hackertarget.com zone-transfer, CMSmap for CMS.
 
+**After fingerprinting:** for each detected product + version, use the `web_search` tool to pull known CVEs/advisories for that exact version string (e.g. "Confluence 7.13.0 RCE", "nginx 1.18 CVE"). This complements nuclei's local templates by surfacing newer or template-less issues and returns exploit/PoC context to act on.
+
 ---
 
 ## Phase 4: Origin-IP / WAF Bypass

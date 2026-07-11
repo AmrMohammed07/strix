@@ -152,6 +152,33 @@ def calculate_cvss_and_severity(
         return base_score, severity, vector
 
 
+_HTTP_REQUEST_RE = re.compile(r"\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT)\b")
+_HTTP_RESPONSE_RE = re.compile(r"HTTP/\d(?:\.\d)?|\b[1-5]\d{2}\s")
+
+
+def _validate_raw_http_evidence(technical_analysis: str | None) -> list[str]:
+    """Heuristic content check: an HTTP finding's technical_analysis must contain
+    evidence of BOTH a raw HTTP request (a method verb) AND a raw HTTP response (a
+    status line / HTTP version). Non-emptiness is enforced separately; this ensures
+    the mandated raw HTTP evidence is actually present, not just prose. It is a
+    lightweight pattern check, not a full HTTP parser.
+    """
+    errors: list[str] = []
+    if not technical_analysis or not technical_analysis.strip():
+        return errors
+    if not _HTTP_REQUEST_RE.search(technical_analysis):
+        errors.append(
+            "technical_analysis must include the raw HTTP request — no method verb "
+            "(GET/POST/PUT/PATCH/DELETE/...) detected"
+        )
+    if not _HTTP_RESPONSE_RE.search(technical_analysis):
+        errors.append(
+            "technical_analysis must include the raw HTTP response — no status line "
+            "detected (e.g. 'HTTP/1.1 200 OK' or '403 Forbidden')"
+        )
+    return errors
+
+
 def _validate_required_fields(**kwargs: str | None) -> list[str]:
     validation_errors: list[str] = []
 
@@ -225,6 +252,11 @@ def create_vulnerability_report(  # noqa: PLR0912
         poc_script_code=poc_script_code,
         remediation_steps=remediation_steps,
     )
+
+    # Enforce raw HTTP evidence for HTTP-oriented findings. Code-review findings
+    # (code_locations provided) are evidenced by source locations, not HTTP traffic.
+    if not code_locations:
+        validation_errors.extend(_validate_raw_http_evidence(technical_analysis))
 
     parsed_cvss = parse_cvss_xml(cvss_breakdown)
     if not parsed_cvss:

@@ -56,6 +56,8 @@ wafw00f https://target.com -v | tee /workspace/waf_detection.txt
 
 # Technology fingerprinting
 httpx -u https://target.com -title -tech-detect -status-code | tee /workspace/tech_stack.txt
+# For EVERY detected product + version → web_search known CVEs/advisories for that
+# exact version (complements nuclei; catches issues newer than local templates).
 
 # JS analysis for endpoints and secrets
 katana -u https://target.com -jc -d 5 -o /workspace/crawl_results.txt

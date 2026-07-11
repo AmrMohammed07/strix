@@ -95,6 +95,12 @@ Cookie: session=OLD_TOKEN
 # This enables: attacker who had old token stays logged in after victim changes password
 ```
 
+**Same test applies to email change** — verify old sessions are invalidated after an
+email change, not just a password change. Email change is a security-relevant action
+(it can redirect account recovery to the attacker) and frequently skips session
+invalidation. Run the identical two-session test: change the email in session A, then
+confirm session B is dead.
+
 ### Session Not Invalidated After Role Change
 
 ```
@@ -154,6 +160,19 @@ Set-Cookie: session=TOKEN; Path=/
 # Sensitive data in payload → readable without secret
 # Symmetric vs asymmetric confusion
 ```
+
+### Token Storage Location — Determine and Record First
+Before testing anything else, determine and record WHERE the session/auth token is
+stored — this dictates which downstream attack vectors even apply:
+- **Cookie** — record the flags: `HttpOnly` (blocks `document.cookie` theft via XSS),
+  `Secure` (blocks plaintext-HTTP leakage), `SameSite` (CSRF exposure). Inspect via
+  DevTools → Application → Cookies or the `Set-Cookie` response headers.
+- **localStorage / sessionStorage** — readable by ANY same-origin JavaScript, so any
+  XSS = token theft (no `HttpOnly` protection possible). Inspect via DevTools →
+  Application → Local/Session Storage.
+Note it explicitly in your findings: a token in localStorage makes XSS→ATO trivial;
+a cookie without `HttpOnly` is equivalent; an `HttpOnly` cookie shifts the attack
+toward CSRF/fixation instead. The storage choice changes the whole threat model.
 
 ## Testing Methodology
 
