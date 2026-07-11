@@ -502,3 +502,64 @@ parser_confusion_origins = [
 **Tooling for scale**
 - Single target (Burp): spider the app, then Burp-search responses for `Access-Control`; on each hit inject `Origin: attacker.com` / `Origin: null` / `Origin: attacker.target.com` and check for reflection.
 - Mass scan: [CorsMe](https://github.com/Shivangx01b/CorsMe) — `cat live_hosts.txt | ./CorsMe -t 70`. Pipe a normal `subfinder -d target.com | httpx` host list through it to triage which endpoints reflect the origin before manual credential+sensitive-data confirmation.
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/cors)
+
+These extend the CORS methodology with attack surfaces, escalation chains, and fuzzing/reporting techniques not covered above.
+
+**Fuzz the origin allowlist regex with `recollapse`**
+When the validator is an unanchored/partly-escaped regex (contains-style `trusted.com` with unescaped dots), don't hand-craft origins — generate variations mechanically. `recollapse` mutates a known-good origin string (encoding, normalization, delimiter, and case permutations) to surface which mutated Origin the regex still accepts:
+```
+recollapse -e all "https://trusted.com" | while read o; do
+  curl -s -H "Origin: $o" -H "Cookie: session=$C" https://target/api/me \
+    -D - -o /dev/null | grep -i "access-control-allow-origin: $o" && echo "HIT: $o"
+done
+```
+
+**CRLF header injection → forge your own CORS headers (CRLF→CORS)**
+If the target has *any* response-splitting / CRLF sink (a reflected param that lands in a response header, e.g. `?lang=` echoed into `Content-Language`), you don't need a misconfigured allowlist at all — inject the CORS headers yourself:
+```
+GET /page?lang=en%0d%0aAccess-Control-Allow-Origin:%20https://evil.com%0d%0aAccess-Control-Allow-Credentials:%20true HTTP/1.1
+```
+This turns an otherwise-locked-down endpoint into a credentialed cross-origin read. Chain with any CRLF finding on the same host.
+
+**Spring `UriComponentsBuilder` `[`-in-userinfo divergence**
+Beyond generic backslash confusion, Spring's URL parser and the browser disagree specifically on `[` inside userinfo. An Origin like `https://trusted.com\[@attacker.com` parses to hostname `trusted.com` server-side (passes validation) but the browser treats `attacker.com` as the real origin:
+```
+Origin: https://trusted.com\[@attacker.com     # Spring hostname=trusted.com, browser origin=attacker.com
+```
+Add this to the parser-confusion origin set specifically when the backend is Spring/Java.
+
+**Loopback / desktop-app & media-server CORS (`http://127.0.0.1:PORT`)**
+Local app servers bundled with desktop/mobile apps frequently ship `ACAO:*` (or reflection) + `ACAC:true`, and any web page the user visits can read them. Confirmed surfaces from the corpus:
+- Joplin `GET http://127.0.0.1:41184/folders` (relaxed CORS) leaks notebook IDs (CVE-2020-15930).
+- Mini Mouse iOS `:server` — `?op=get_device_info` / `get_file_list` leak device paths/uuid.
+- CentOS Web Panel on `:2030` / `:2087` — read admin pages cross-origin.
+- Emby/Jellyfin media servers — `ACAO:*`.
+Minimal readability proof for a loopback target:
+```html
+<script>
+ x=new XMLHttpRequest();
+ x.onreadystatechange=function(){ if(x.readyState==4) alert(x.responseText); }
+ x.open('GET','http://127.0.0.1:41184/folders'); x.withCredentials=true; x.send();
+</script>
+```
+
+**Sensitive auth headers exposed via `Access-Control-Allow-Headers`**
+Don't only read the JSON body — check `Access-Control-Allow-Headers`. Emby/Jellyfin expose `X-Emby-Authorization` / `X-MediaBrowser-Token` through ACAH, meaning attacker JS can send/read those auth headers cross-origin. An over-broad `Access-Control-Allow-Headers` (or `*`) that whitelists custom auth/token headers is itself an escalation lever even when the origin check looks tight.
+
+**Escalation: CORS → RCE**
+A relaxed-CORS read that leaks internal identifiers can chain into code execution when a sibling write endpoint accepts attacker content:
+- Joplin: read `GET /folders` (leaks notebook IDs) → `POST /notes` embedding `data:text/html` that runs `child_process.exec` → RCE.
+- CWP: read the admin page cross-origin, then credentialed `POST module=rootpwd` (`vuln.withCredentials='true'`) to change the root password.
+Frame these as CORS-read → state-change/RCE chains, not "info disclosure only."
+
+**Report downgrade-counters (triage rebuttals)**
+Pre-empt the three most common triager downgrades:
+- "Wildcard, low severity" → demonstrate it's **reflection + `ACAC:true`** (not `*`) and show reading authenticated data.
+- "No sensitive data" → point to the specific PII/token field in the captured body.
+- "CSRF token protects it" → demo reading the anti-CSRF token cross-origin, then firing the state change.
+
+**Real precedents / CVE bank for the report**
+Anchor the writeup with disclosed precedent: Appwrite `/v1/account` reflection → ATO (CVE-2026-27579); LocalTapiola/Lähitapiola CORS → steal password/Authorization token/SSN/bank (H1, 86 & 84 upvotes); Eramba v3.26.0 `/system-api/user/me`; craftercms 4.x null-origin two-way interaction (EDB-51313); Joplin CVE-2020-15930 (CORS→RCE). Canonical reference: James Kettle, *"Exploiting CORS Misconfigurations for Bitcoins and Bounties"* (AppSec EU 2017).

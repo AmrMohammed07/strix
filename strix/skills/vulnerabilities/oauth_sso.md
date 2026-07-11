@@ -187,3 +187,61 @@ Also try **IDN homograph** (`www.cṍmpany.com`), **black/invisible chars** (`%0
 - **Auth0 0/1-click account linking:** victim signs up via "Log in with Google"; attacker registers the *same email* with a password → if pre-linked, logged in (0-click), or logs in after victim clicks the confirm link (1-click).
 - **Auth0 self-registration on login-only targets:** intercept the login request, change endpoint `/co/authenticate` → `/dbconnections/signup`, send `email`/`password`/`connection`; a `200` with `"email_verified":false` means you just created an account on a "login-only" app.
 - **Auth0 Unicode email-normalization ATO:** register `victim@domain.com`, then register the dotless-i variant `vıctim@domain.com`; if the Get-User script doesn't normalize, both map to one user and you overwrite the credential.
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/oauth-oidc)
+
+These are corpus-derived techniques (with CVE/report precedent) not covered by the redirect_uri/state/token-reuse baseline above or by `oidc_attacks.md`. Each is a distinct request-level move.
+
+### `state` interception via query-param injection (TeamCity CVE-2022-24342)
+Different root cause than "missing/static state": here `state` *is* present and validated, but the attacker injects query params during the flow to redirect the user into an **arbitrary** provider OAuth app they control, intercept a valid `state`, and connect their own social account to the victim's target account.
+> "TeamCity was vulnerable to query parameter injection during OAuth2 flow, allowing an attacker to redirect user into an arbitrary GitHub OAuth2 application, intercept a valid state parameter, and connect arbitrary GitHub account to victim's TeamCity account."
+
+Attacker hosts a GitHub OAuth app + exploit page:
+```
+authorization callback url: "http://{exploit-host}:8000/callback"
+http://{exploit-host}:8000/exploit?target_host=http://{target-host}&gh_client_id={github_oauth_client_id}
+```
+
+### `request_uri` blind SSRF (Keycloak CVE-2020-10770)
+Distinct from OIDC discovery-document SSRF: the OIDC `request_uri` parameter on the authorize endpoint is fetched server-side, unauthenticated. Put an OAST host in it and watch for the callback. Verbatim PoC:
+```
+GET /auth/realms/master/protocol/openid-connect/auth?scope=openid&response_type=code&redirect_uri=valid&state=cfx&nonce=cfx&client_id=security-admin-console&request_uri=http://{hook}
+```
+Related precedent: GitLab "Unauthenticated blind SSRF in OAuth Jira authorization controller" ($4000).
+
+### Base64-encoded callback params leak PII / are forgeable
+Opaque-looking callback values (`state`, tokens, metadata blobs) are often just Base64 JSON that implementations assume is hidden. Always decode them.
+> "Always decode opaque-looking values. Many implementations Base64-encode JSON or user metadata and assume that is 'hidden'. Base64 is reversible" — callback URLs leak email, tenant IDs, return paths, internal workflow state.
+
+Decode `state`/opaque tokens for PII and to forge a matching value.
+
+### Callback error-page XSS / HTML-injection (trusted-origin phishing) + WAF bypass
+The first-party callback frequently reflects login failures using attacker-controlled `error`, `error_description`, `state`, `code` into HTML without encoding → XSS / credential-harvest phishing on a trusted origin. When common handlers are blacklisted, swap them for uncommon browser-specific event handlers (e.g. a Safari-only handler) to fire on the reflected callback page. Confirm by injecting `error_description=<mark>` / `state=<mark>` and looking for unencoded reflection.
+
+### Forced OAuth authorization — no explicit consent click (LinkedIn)
+The consent/approve button is auto-triggered without a deliberate click, so a framed/scripted page completes the grant.
+> LinkedIn "Forced OAuth authorization using button ID in hash and holding space" — the approve button is a hash-targeted element auto-activated via a held keypress (spacebar), so a framed page approves the grant.
+
+### OAuth remember-me / cookie forge → auth bypass (Grafana 2.0–5.2.2)
+An OAuth/LDAP seeding flaw lets an attacker forge a valid remember-me cookie for any known username — full auth bypass independent of the OAuth flow itself.
+> "Through improper seeding while userdata are requested from LDAP or OAuth it's possible to craft a valid remember-me cookie … bypass authentication for everyone knowing a valid username." (Metasploit `grafana_auth_bypass`)
+
+### `redirect_uri` percent / malformed-host confusion (Spring `DefaultRedirectResolver`, CVE-2019-3778)
+A specific bypass beyond the fork's pattern list: insert a stray leading `%` so the AS URI parser mis-validates but the browser still routes to the attacker host — no OAuth error, `code` delivered to attacker.
+```
+redirect_uri=http://%localhost:9000/login/oauth2/code/     # vs legit http://localhost:8086/login/oauth2/code/
+```
+Result — `302 Location: http://localhost:8086/login/oauth2/code/?code=4ecsea&state=...` to the attacker-controlled authority.
+
+### Whitelisted-host open-redirect chaining, incl. Basecamp CVE-2025-57821
+Even a fully-locked `redirect_uri` whitelist fails if a whitelisted client app itself hosts an open redirector that forwards the `code`. New precedent worth noting:
+> Basecamp `omniauth-rails_csrf_protection`/OAuth gem CVE-2025-57821: "A malformed URL bypasses the same-origin check on the `origin`/return parameter and redirects off-site **while preserving Rails flash/session cookies**."
+
+### Implicit/hybrid token theft via attacker-controlled subpath on a trusted domain (HackTricks FXAuth)
+Distinct from the "tokens-in-URL leak via Referer" note in `oidc_attacks.md`: point `redirect_uri`/`next` at an **attacker-controlled namespace on the allowlisted domain**, then have JS on that trusted subpath read `location.hash` and exfiltrate — the domain is "trusted" so validation passes.
+> "JavaScript on that page reads location.hash and exfiltrates the values despite the domain being 'trusted.'" Then replay captured values against downstream privileged endpoints.
+
+### postMessage origin-check bypass via regex-dot / substring (weak validation)
+Beyond the basic `postMessage(..., "*")` theft: when the receiver validates origin with `.match()`, `indexOf()`, `endsWith()`, or `startsWith()`, craft a domain that satisfies the check.
+> `.match()` "is intended for regular expressions … a dot (.) acts as a wildcard, allowing bypassing with specially crafted domains" — e.g. `legitXcom.attacker.com`, `legit.com.attacker.com`.

